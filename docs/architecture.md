@@ -59,6 +59,7 @@ jarvis/                  # nome da pasta no disco — não renomeada (só o
     apple-reminders/          # Fase 1: Apple Reminders via EventKit (ponte JXA)
     gmail/                     # Fase 1: Gmail (leitura, OAuth próprio) — fecha a Fase 1
     memory/                     # Fase 2: memória persistente (fatos + preferências, SQLite+FTS5)
+    apple-notes/                 # Fase 3: Apple Notes via scripting Application("Notes") (não EventKit)
   scripts/
     gmail-auth.ts              # autorização OAuth interativa (roda uma vez): `pnpm gmail:auth`
 ```
@@ -518,6 +519,85 @@ fail-safe de alto risco e também pede confirmação `(s/n)` no terminal
 nunca execução silenciosa), mas vale de saber: uma pergunta de
 esclarecimento do próprio agente também para o fluxo esperando "s/n".
 
+### Notas pendentes da Fase 2 (sem ação de código agora — só registro pro futuro)
+
+1. **`listByCategory("preferencia")` não tem limite** — toda a tabela
+   de preferências entra inteira no `systemPrompt` de cada `query()`.
+   Sem custo perceptível hoje (poucas preferências, um assistente
+   pessoal de um usuário só), mas cresce sem revisão: se um dia isso
+   virar uma lista longa, cada chamada ao modelo carrega esse texto
+   inteiro de novo, sempre. Não implementado agora (paginação, resumo,
+   ou algum critério de relevância/recência) porque seria
+   over-engineering pra um problema que ainda não existe — só
+   registrado aqui pra não ser esquecido quando existir.
+2. **Não há tratamento de preferência duplicada ou conflitante.** Se o
+   usuário guardar duas preferências que se contradizem (ex.: "sempre
+   lista Trabalho" e depois "sempre lista Pessoal"), as DUAS entram no
+   `systemPrompt` — o comportamento resultante depende de como o
+   modelo interpreta a contradição, não é determinístico por design.
+   `memory.forget` existe como saída, mas depende do usuário lembrar
+   de apagar a preferência antiga antes de guardar uma nova — nada
+   detecta ou avisa sobre o conflito automaticamente. Não resolvido
+   agora (ex.: versionar preferências, substituir por categoria+chave
+   em vez de só categoria) pela mesma razão do item 1: ainda não virou
+   problema real, e a complexidade extra (o que conta como "a mesma"
+   preferência? por texto? por similaridade?) não vale a pena
+   antecipar sem um caso real guiando a decisão.
+
+## Decisões e bugs encontrados na Fase 3 (Apple Notes)
+
+**Mecanismo diferente de propósito, não EventKit.** Notes.app não tem
+framework público equivalente ao EventKit usado por apple-calendar/
+apple-reminders — só scripting via `Application("Notes")` (o
+dicionário AppleScript do app, exposto em JXA). Sem `ObjC.import`, sem
+`EKEventStore`, sem `requestAccess` explícito: outro mecanismo do
+macOS inteiramente (Apple Events/Automation). Por isso os bugs
+encontrados aqui são NOVOS, específicos deste bridge — testado contra
+o app real antes de qualquer linha de código, mesma metodologia de
+sempre, sem assumir que as armadilhas do EventKit se repetiriam:
+
+1. **Título e primeira linha do `body` são a MESMA COISA** — não dois
+   campos independentes como em Reminders (title vs body/notes). Ao
+   criar `Notes.Note({name, body})`, o Notes.app insere `name`
+   AUTOMATICAMENTE como a primeira linha do body, mesmo que o body
+   passado não a contenha (testado: um body com conteúdo diferente na
+   "primeira posição" ainda ganha o título como linha 1, empurrando o
+   resto). Por isso o bridge nunca inclui o título dentro do `body`
+   que monta, e a leitura remove a primeira linha de `plaintext()`
+   pra devolver "conteúdo" sem repetir o título.
+2. **`body` é interpretado como HTML de verdade**, não texto puro —
+   testado passando `<tag>` e `&`/aspas sem escapar: a tag some
+   (marcação inválida descartada) e os caracteres especiais corrompem
+   o HTML armazenado. Corrigido escapando todo conteúdo do usuário
+   (`&`, `<`, `>`, `"`, `'`) antes de montar o body.
+3. **Quebra de linha real (`\n`) dentro da string do body NÃO cria
+   parágrafos separados** — testado: todas as linhas colapsam numa
+   linha só, separadas por espaço. Corrigido convertendo pra `<br>`
+   explicitamente, depois de escapar (senão o `<br>` também seria
+   escapado e apareceria como texto literal).
+4. **`account.notes()` sem filtro de pasta inclui as notas da pasta
+   "Recently Deleted"** (lixeira) — testado: uma lista geral de notas
+   trazia itens já apagados junto. Não faz sentido pra um "liste
+   minhas notas" comum, então o bridge filtra essa pasta por nome ao
+   listar sem `folderName` explícito (limitação conhecida: só
+   funciona no idioma em que essa pasta aparece pro usuário — testado
+   em "Recently Deleted", inglês; não filtra nada se o usuário pedir
+   essa pasta explicitamente por nome).
+5. **Pasta não encontrada lança um erro JS capturável**
+   (`Can't get object.`), diferente do crash nativo incapturável do
+   EventKit ao passar `null`/array literal em certos parâmetros (bug
+   documentado na Fase 1 do apple-reminders) — um `try/catch` normal
+   já resolve aqui, sem precisar de nenhum tratamento especial.
+6. **Pasta padrão não é hardcoded** ("Notes"/"Notas" conforme idioma
+   do sistema): criar/listar sem especificar pasta usa
+   `account.notes`/`account.notes.push(...)` diretamente, sem
+   precisar adivinhar o nome localizado da pasta padrão.
+
+Escopo: só título, conteúdo em texto simples (opcional) e pasta
+(opcional) — mesmo princípio do apple-reminders (só o que a interface
+de scripting cobre com confiança). Sem anexos, sem formatação rica,
+sem tags.
+
 ## Status atual
 
 Fase 0 (fundação) e Fase 1 (Apple Calendar via EventKit) implementadas
@@ -654,6 +734,36 @@ era sobreviver a reiniciar o processo, não conversa continuando):
   removidos depois — a preferência sobre lembretes ficou guardada de
   propósito, é o resultado real da feature, não lixo de teste.
 
+**Apple Notes (`apple_notes.list_notes` / `apple_notes.create_note`)
+também validado rodando de verdade**, depois de corrigir os 4 bugs
+reais documentados acima (título/primeira linha, HTML não escapado,
+quebra de linha, pasta "Recently Deleted" vazando na listagem):
+
+- `lista minhas notas` → rodou direto, sem confirmação; trouxe as
+  notas reais do usuário (ESOGASTRO, Austrália, Ideias de nomes,
+  Sabores de pizza, Lista de compras — pasta padrão "Notes"), sem
+  nenhuma nota da lixeira misturada.
+- `cria uma nota chamada "Teste SARAH Notes" com o conteúdo "..."` →
+  rodou direto, sem confirmação; conferido direto no app Notes de
+  verdade (via o bridge, não só pelo texto do agente) que a nota
+  apareceu com título e conteúdo corretos, sem duplicar o título
+  dentro do conteúdo.
+- Audit log confirma `mcp__sarah-apple-notes__list_notes` e
+  `mcp__sarah-apple-notes__create_note`, `risk: low`, `decision:
+  auto-allow`.
+- Nenhum popup de permissão de Automation apareceu durante a
+  validação — provavelmente já concedido de sessões anteriores deste
+  mesmo usuário/máquina; numa máquina sem esse acesso prévio, o macOS
+  deve pedir permissão pro `osascript` controlar o Notes.app na
+  primeira chamada (mesmo tipo de interação manual já visto com
+  Calendar/Reminders, só que é a categoria "Automation" das
+  Preferências do Sistema, não "Acesso a dados" — EventKit e Notes
+  scripting usam mecanismos de permissão diferentes do macOS).
+- Todas as notas de teste criadas durante a exploração e validação
+  desta fase (8 no total, incluindo as usadas só pra descobrir os
+  bugs acima) foram removidas depois — confirmado que sumiram da
+  pasta "Notes" numa listagem final.
+
 ## Renomeação: JARVIS → SARAH
 
 O projeto (e o assistente em si) foi renomeado de JARVIS pra SARAH —
@@ -720,7 +830,9 @@ revalidação foram removidos depois.
    — remember/recall/forget persistentes + injeção determinística de
    preferências via `systemPrompt` — e memória de SESSÃO via `resume`
    do Agent SDK, corrigida nesta mesma fase). **(Fase 2 completa)**
-3. Apple Notes + ações de e-mail (responder/rascunho) com confirmação.
+3. Apple Notes (**feito**: list_notes + create_note, scripting via
+   `Application("Notes")`) + ações de e-mail (responder/rascunho) com
+   confirmação. **(Fase 3 em andamento — falta só e-mail)**
 4. App de menu bar nativo substituindo o terminal; voz opcional.
 5. Agente de código: sandbox Docker por projeto, criação de projetos, git.
 6. GitHub completo (commits, PRs) + deploy de sites.
@@ -730,11 +842,10 @@ revalidação foram removidos depois.
 
 ## Próximo passo concreto
 
-**Fase 2 está completa**: memória persistente (fatos + preferências,
-sobrevive a reiniciar o processo) e memória de sessão (`resume`,
-sobrevive entre turnos dentro do mesmo processo) implementadas e
-validadas rodando de verdade, incluindo o caso que motivou a fase —
-uma preferência guardada numa execução do `pnpm dev` mudou o
-comportamento real de `apple_reminders.create_reminder` numa execução
-seguinte, sem precisar repetir nada. Próximo passo é a Fase 3: Apple
-Notes + ações de e-mail (responder/rascunho) com confirmação.
+**Fase 3 está em andamento**: Apple Notes feito e validado rodando de
+verdade (`list_notes`/`create_note`, mesmo padrão de risco/Gateway das
+outras integrações — ver bugs reais encontrados no scripting do
+Notes.app, diferentes dos do EventKit, na seção acima). Falta só
+**ações de e-mail (responder/rascunho) com confirmação** — a única
+peça de escrita em e-mail, deliberadamente de alto risco, diferente da
+leitura já feita na Fase 1 — pra fechar a fase inteira.

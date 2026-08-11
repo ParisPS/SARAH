@@ -49,6 +49,11 @@ const LOW_RISK_TOOLS = new Set<string>([
   // deste projeto.
   "mcp__sarah-memory__remember",
   "mcp__sarah-memory__recall",
+  // Apple Notes: mesma justificativa de apple_calendar/apple_reminders
+  // — listar é leitura pura, criar é aditivo e reversível (não apaga
+  // nem sobrescreve nenhuma nota existente).
+  "mcp__sarah-apple-notes__list_notes",
+  "mcp__sarah-apple-notes__create_note",
 ]);
 
 export function classifyRisk(toolName: string): RiskLevel {

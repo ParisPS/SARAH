@@ -9,6 +9,7 @@ import { notionServer } from "@sarah/notion";
 import { appleRemindersServer } from "@sarah/apple-reminders";
 import { gmailServer } from "@sarah/gmail";
 import { createMemoryServer } from "@sarah/memory";
+import { appleNotesServer } from "@sarah/apple-notes";
 
 /**
  * Loop principal do REPL de terminal que fala com o Claude Agent SDK,
@@ -103,7 +104,8 @@ export async function runSarah(): Promise<void> {
       "'liste meus eventos de hoje', 'marca um compromisso amanhã às 15h' (vai pro Notion, " +
       "o calendário principal), 'cria um evento no Apple Calendar amanhã às 15h', " +
       "'cria um lembrete pra ligar pro dentista', 'resuma meus e-mails de hoje', " +
-      "'lembra que...' (guarda uma preferência ou fato) ou 'o que você sabe sobre mim?'\n"
+      "'lembra que...' (guarda uma preferência ou fato), 'o que você sabe sobre mim?', " +
+      "'lista minhas notas' ou 'cria uma nota com...'\n"
   );
 
   // Session ID da conversa atual, capturado da mensagem system/init da
@@ -152,6 +154,7 @@ export async function runSarah(): Promise<void> {
             "sarah-apple-reminders": appleRemindersServer,
             "sarah-gmail": gmailServer,
             "sarah-memory": memoryServer,
+            "sarah-apple-notes": appleNotesServer,
           },
           disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
           canUseTool,
