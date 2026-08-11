@@ -7,7 +7,8 @@
     "dev": "tsx src/main.ts"
   },
   "dependencies": {
-    "@sarah/core": "workspace:*"
+    "@sarah/core": "workspace:*",
+    "@sarah/permissions": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.0"

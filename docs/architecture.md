@@ -1008,6 +1008,120 @@ o texto do agente) — os quatro batem exatamente com os nomes `sarah-*`
 novos. Os eventos/página/lembrete de teste criados durante essa
 revalidação foram removidos depois.
 
+## Decisões e bugs encontrados na Fase 4, parte 1 (framework de interface + Gateway desacoplado do terminal)
+
+**Escopo desta parte:** só a escolha do framework de interface + a
+refatoração do Gateway pra não depender mais de terminal. A janela/app
+de menu bar em si (a Fase 4 de verdade) é o próximo passo — aqui só se
+garante que o terreno está pronto pra construir em cima sem rework.
+
+### Decisão de framework: Electron, não Tauri
+
+Motivo, direto do histórico real deste projeto: na Fase 1,
+`swiftc` falhou nesta máquina com `xcrun: error: invalid active
+developer path (/Library/Developer/CommandLineTools), missing xcrun`
+— Xcode Command Line Tools instalado mas incompleto, sem `Xcode.app`.
+Reconferido antes de decidir o framework da Fase 4 (não assumido que
+"já foi resolvido sozinho"): **o mesmo erro ainda ocorre hoje**,
+`xcrun`/`xcodebuild`/`swiftc` continuam quebrados nesta máquina.
+
+Tauri exige `cargo build` do binário principal em Rust, que por sua
+vez invoca o linker/`cc` do sistema — o MESMO toolchain quebrado que
+derrubou o `swiftc` na Fase 1 (não é um problema específico do
+Swift, é o Xcode Command Line Tools inteiro faltando `xcrun`).
+Electron, ao contrário, não precisa compilar nada localmente pro
+básico (Tray + janela): o processo principal roda em Node puro e o
+runtime (Chromium + Node embutidos) vem como um binário PRÉ-COMPILADO
+baixado do npm — o único requisito é rede pra baixar esse binário, não
+um compilador funcionando nesta máquina. Escolhido por esse motivo
+específico, não por preferência genérica de ecossistema.
+
+### Teste isolado ANTES de instalar o projeto inteiro
+
+Seguindo a mesma metodologia de sempre (testar a peça arriscada
+isolada antes de integrar): um projeto `npm` mínimo fora do monorepo
+(scratchpad da sessão, descartado depois — nunca fez parte do
+histórico deste repo), só com `electron` como dependência, um
+`main.js` de ~15 linhas criando um `Tray` (ícone PNG mínimo embutido
+como base64, só pra ter algo visível) e uma `BrowserWindow` com
+"hello world".
+
+- `npm install electron` baixou o binário pré-compilado
+  (`node_modules/electron/dist/Electron.app`, confirmado com `file`:
+  `Mach-O 64-bit executable arm64`) sem invocar `swiftc`/`cargo`/
+  nenhum compilador — só download.
+- Rodando o app: os quatro processos esperados de uma app Electron
+  real subiram (main, GPU process, renderer, utility de rede),
+  confirmado via `ps aux`, sem nenhum erro relacionado a compilação
+  nativa ou sandbox do sistema.
+- **Achado real do ambiente, não do framework:** a primeira tentativa
+  falhou com `TypeError: Cannot read properties of undefined (reading
+  'whenReady')` — `require("electron")` devolvia uma STRING (o
+  caminho do binário), não o módulo de verdade. Causa: a variável de
+  ambiente `ELECTRON_RUN_AS_NODE=1` já vem definida no shell deste
+  ambiente de execução (não é nada deste projeto — provavelmente
+  ligada à própria ferramenta que roda o Claude Code aqui, que também
+  é Electron por baixo). Com essa variável setada, QUALQUER binário
+  Electron invocado roda só como Node puro, nunca como app GUI —
+  documentado aqui porque é uma armadilha real que vai se repetir se
+  algum dia `pnpm dev` do app de menu bar for lançado a partir de um
+  terminal/processo que herdou essa mesma variável. Contornado no
+  teste com `env -u ELECTRON_RUN_AS_NODE electron .`; a app real da
+  Fase 4 (próximo passo) precisa considerar isso no script que a
+  lança.
+- Não foi possível confirmar visualmente o Tray/janela por screenshot
+  (`screencapture` falhou com "could not create image from display" —
+  falta de permissão de Gravação de Tela do macOS pro processo que
+  rodou o comando, uma parede de PERMISSÃO, não de compilação).
+  Aceito como limitação desta validação específica — a evidência de
+  processo (main/GPU/renderer/network subindo sem erro, mesmo
+  mecanismo que uma janela de verdade usa) já é suficiente pra decidir
+  "builda e roda nesta máquina", que era a pergunta que este teste
+  respondia.
+
+**Conclusão: nenhuma parede de compilação nativa apareceu com
+Electron** — decisão confirmada, sem precisar de `xcode-select
+--install` nem qualquer instalação gráfica.
+
+### Refatoração do Gateway: confirmação deixa de assumir terminal
+
+Antes desta fase, `@sarah/permissions` tinha `readline` (e o texto da
+pergunta "(s/n)") HARDCODED dentro de `askConfirmation()` — funcionava
+porque até aqui só existia uma interface (o terminal), mas não teria
+como uma janela Electron confirmar uma ação de alto risco com um
+dialog nativo sem reescrever esse pacote inteiro.
+
+Mudança: `createGateway()` agora recebe `confirm: ConfirmFn`
+OBRIGATÓRIO nas opções — `(toolName, input, preview) => Promise<boolean>`,
+onde `preview` é o texto já resolvido por `formatConfirmationInput`
+(ou `null`). `@sarah/permissions` não sabe mais nada sobre `readline`,
+nem sobre qual interface está do outro lado — só chama a função que
+recebeu. `packages/core`'s `runSarah()` também passou a receber
+`confirm` como parâmetro obrigatório e só repassa pro Gateway, sem
+tocar na lógica. `apps/cli/src/main.ts` ganhou a implementação
+`confirmViaTerminal` — exatamente o mesmo `readline.createInterface` +
+texto + `(s/n)` que existia antes dentro de `@sarah/permissions`, só
+que movido pra cá. Uma futura `apps/menubar` (Fase 4 de verdade) vai
+fornecer sua própria implementação (dialog nativo do Electron) sem
+precisar tocar em `@sarah/permissions` nem em `@sarah/core`.
+
+**Validado rodando de verdade, comparando com o comportamento de ANTES
+da refatoração** (mesmo texto, mesmo fluxo — não só "não quebrou"):
+
+- `me dê um ping...` → roda direto, sem confirmação (baixo risco,
+  auto-allow) — comportamento inalterado.
+- `finja apagar o arquivo teste.txt` → tela de confirmação idêntica à
+  de antes: `⚠️  Ação de ALTO RISCO solicitada: mcp__sarah-fixtures__pretend_delete`,
+  `Entrada: {"path":"teste.txt"}`, `Confirmar execução? (s/n)`.
+- Respondido "n" → negado, mesma mensagem de sempre, nada executado.
+- Respondido "s" (rodada separada) → confirmado e executado, mesma
+  mensagem de sempre.
+- Conferido direto no `data/sarah.db` (não só pelo texto do agente):
+  as três decisões batem exatamente (`ping`/`low`/`auto-allow`,
+  `pretend_delete`/`high`/`denied`, `pretend_delete`/`high`/
+  `confirmed`) — mesmo padrão de decisões que já existia antes desta
+  refatoração.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -1027,6 +1141,9 @@ revalidação foram removidos depois.
    real de um rascunho já existente, com confirmação melhorada
    mostrando o conteúdo legível). **(Fase 3 completa)**
 4. App de menu bar nativo substituindo o terminal; voz opcional.
+   **(Fase 4, parte 1 feita: framework decidido — Electron — e o
+   Gateway refatorado pra não depender mais de terminal; falta
+   construir a janela/Tray de verdade e, à parte, a voz.)**
 5. Agente de código: sandbox Docker por projeto, criação de projetos, git.
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
@@ -1035,17 +1152,23 @@ revalidação foram removidos depois.
 
 ## Próximo passo concreto
 
-**Fase 3 está completa**: Apple Notes (`list_notes`/`create_note`) e
-o ciclo inteiro de e-mail (`get_message`/`create_draft`/`reply_draft`,
-baixo risco, e `send_draft`, alto risco — decisão deliberada, não
-reversão da cautela anterior) feitos e validados rodando de verdade,
-incluindo inspeção direta pela API do Gmail (não só pelo texto do
-agente): rascunhos nunca saem como enviados sozinhos
-(`labelIds: ["DRAFT"]`), ficam corretamente encadeados na thread
-original quando é resposta, e o envio real (`send_draft`) foi
-confirmado chegando na caixa de entrada (`labelIds: ["SENT",
-"INBOX"]`) só depois de uma confirmação de alto risco mostrando
-Para/Assunto/corpo de forma legível. Continua valendo, mais forte que
-nunca: nenhuma tool "compor e enviar direto" existe — o fluxo sempre
-passa por rascunho primeiro. Próximo passo é a Fase 4: app de menu bar
-nativo substituindo o terminal, com voz opcional.
+**Fase 3 está completa** (Apple Notes + ciclo inteiro de e-mail,
+incluindo `send_draft`, validados rodando de verdade — detalhes na
+seção acima).
+
+**Fase 4, parte 1 está completa**: framework de interface decidido
+(Electron, por não depender de compilação nativa local — este é o
+motivo real, ligado ao `swiftc`/Xcode CLT quebrado desde a Fase 1) e
+validado com um teste isolado (Tray + janela mínimos, processos
+main/GPU/renderer/network subindo sem parede de compilação); o
+Gateway (`@sarah/permissions`) foi refatorado pra receber `confirm`
+injetado em vez de ter `readline` preso dentro — `apps/cli` fornece a
+implementação de terminal, com comportamento revalidado como
+IDÊNTICO ao de antes (mesmo texto de confirmação, mesmas decisões no
+audit log). Nenhuma janela/Tray de verdade foi construída ainda — é
+exatamente esse o próximo passo: montar `apps/menubar` (ou nome
+equivalente) usando Electron, com sua própria implementação de
+`ConfirmFn` (dialog nativo em vez de `readline`), reaproveitando
+`@sarah/core` e todos os pacotes de tool sem tocar neles. Voz fica
+pra depois, à parte, tratada como uma etapa independente da
+interface gráfica.

@@ -27,6 +27,9 @@ importers:
       '@sarah/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@sarah/permissions':
+        specifier: workspace:*
+        version: link:../../packages/permissions
     devDependencies:
       tsx:
         specifier: ^4.19.0

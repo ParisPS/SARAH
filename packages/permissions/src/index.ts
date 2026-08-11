@@ -1,6 +1,4 @@
 import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
-import * as readline from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 
 export type RiskLevel = "low" | "high";
 export type Decision = "auto-allow" | "confirmed" | "denied";
@@ -90,30 +88,25 @@ export function classifyRisk(toolName: string): RiskLevel {
  */
 export type FormatConfirmationInput = (toolName: string, input: unknown) => Promise<string | null>;
 
-async function askConfirmation(
-  toolName: string,
-  toolInput: unknown,
-  formatConfirmationInput?: FormatConfirmationInput
-): Promise<boolean> {
-  const rl = readline.createInterface({ input, output });
-  console.log(`\n⚠️  Ação de ALTO RISCO solicitada: ${toolName}`);
-
-  let preview: string | null = null;
-  if (formatConfirmationInput) {
-    try {
-      preview = await formatConfirmationInput(toolName, toolInput);
-    } catch {
-      // Falha ao buscar/formatar o preview (ex.: draft já foi apagado)
-      // não deve impedir a confirmação — cai pro JSON cru abaixo.
-      preview = null;
-    }
-  }
-  console.log(preview ?? `   Entrada: ${JSON.stringify(toolInput)}`);
-
-  const answer = await rl.question("   Confirmar execução? (s/n) ");
-  rl.close();
-  return answer.trim().toLowerCase() === "s";
-}
+/**
+ * Função que decide, na prática, "pergunta e espera resposta" — é o
+ * único pedaço deste pacote que sabe que existe uma INTERFACE (seja
+ * ela qual for) do outro lado. `@sarah/permissions` não amarra mais
+ * essa decisão a `readline`/terminal: recebe o nome da tool, o input
+ * cru e o `preview` já formatado (resultado de `formatConfirmationInput`,
+ * ou `null` se não houver formatador ou ele falhar) e devolve
+ * `true`/`false`. Quem constrói o Gateway (`createGateway`) é
+ * obrigado a fornecer uma implementação — não existe um padrão
+ * universal sensato (terminal, menu bar, notificação do sistema são
+ * mecanismos completamente diferentes de pedir "s/n" pro usuário).
+ *
+ * Fase 0-3: `apps/cli` fornece a única implementação que existe,
+ * baseada em `readline` (mesmo texto/formato de sempre). Fase 4
+ * (interface gráfica) acrescenta uma segunda implementação (dialog/
+ * janela do Electron) sem este pacote precisar saber que ela existe —
+ * mesmo princípio de injeção já usado pra `formatConfirmationInput`.
+ */
+export type ConfirmFn = (toolName: string, input: unknown, preview: string | null) => Promise<boolean>;
 
 export interface DecisionEntry {
   toolName: string;
@@ -127,6 +120,8 @@ export interface GatewayOptions {
   onDecision?: (entry: DecisionEntry) => void;
   /** Ver `FormatConfirmationInput` acima. */
   formatConfirmationInput?: FormatConfirmationInput;
+  /** Ver `ConfirmFn` acima — obrigatório, sem valor padrão (não há UI implícita). */
+  confirm: ConfirmFn;
 }
 
 /**
@@ -135,7 +130,7 @@ export interface GatewayOptions {
  * de interceptação oficial do SDK para decidir, por chamada, se uma
  * tool pode rodar.
  */
-export function createGateway(options: GatewayOptions = {}): CanUseTool {
+export function createGateway(options: GatewayOptions): CanUseTool {
   return async (toolName, toolInput) => {
     const risk = classifyRisk(toolName);
 
@@ -144,7 +139,19 @@ export function createGateway(options: GatewayOptions = {}): CanUseTool {
       return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
     }
 
-    const approved = await askConfirmation(toolName, toolInput, options.formatConfirmationInput);
+    let preview: string | null = null;
+    if (options.formatConfirmationInput) {
+      try {
+        preview = await options.formatConfirmationInput(toolName, toolInput);
+      } catch {
+        // Falha ao buscar/formatar o preview (ex.: draft já foi apagado)
+        // não deve impedir a confirmação — cai pro `null` (a UI injetada
+        // decide o próprio fallback, ex.: mostrar o JSON cru do input).
+        preview = null;
+      }
+    }
+
+    const approved = await options.confirm(toolName, toolInput, preview);
     options.onDecision?.({
       toolName,
       input: toolInput,

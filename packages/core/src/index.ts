@@ -1,7 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import * as readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { createGateway } from "@sarah/permissions";
+import { createGateway, type ConfirmFn } from "@sarah/permissions";
 import { AuditLog } from "@sarah/audit";
 import { fixturesServer } from "@sarah/fixtures";
 import { appleCalendarServer } from "@sarah/apple-calendar";
@@ -48,6 +48,19 @@ import { appleNotesServer } from "@sarah/apple-notes";
  * `draftId` cru. Só o core conhece @sarah/gmail o suficiente pra fazer
  * isso — @sarah/permissions continua sem depender de nenhum pacote de
  * tool específico, só recebe a função pronta.
+ *
+ * FASE 4: `confirm` (o "faz a pergunta e espera resposta" de verdade,
+ * ex.: o `readline.question("... (s/n) ")` de sempre) SAIU de dentro
+ * de @sarah/permissions e passou a ser um parâmetro obrigatório de
+ * `runSarah()`, repassado direto pro Gateway (ver `ConfirmFn` em
+ * @sarah/permissions). Motivo: @sarah/permissions não pode mais
+ * assumir que existe um terminal do outro lado — uma futura interface
+ * gráfica (Electron) vai confirmar ações de alto risco com um
+ * dialog/janela, não com stdin/stdout. O core continua sem saber QUAL
+ * interface está rodando; só encaminha o que `apps/*` fornecer.
+ * `apps/cli/src/main.ts` fornece a implementação readline, com
+ * comportamento IDÊNTICO ao de antes desta refatoração (mesmo texto,
+ * mesmo "(s/n)").
  *
  * Memória PERSISTENTE (sobrevive a reiniciar o processo, diferente do
  * `resume` acima): @sarah/memory guarda fatos/preferências em SQLite
@@ -126,9 +139,18 @@ async function formatConfirmationInput(toolName: string, toolInput: unknown): Pr
   );
 }
 
-export async function runSarah(): Promise<void> {
+export interface RunSarahOptions {
+  /** Ver `ConfirmFn` em @sarah/permissions — quem chama runSarah() decide a interface. */
+  confirm: ConfirmFn;
+}
+
+export async function runSarah(options: RunSarahOptions): Promise<void> {
   const audit = new AuditLog("./data/sarah.db");
-  const canUseTool = createGateway({ onDecision: (entry) => audit.record(entry), formatConfirmationInput });
+  const canUseTool = createGateway({
+    onDecision: (entry) => audit.record(entry),
+    formatConfirmationInput,
+    confirm: options.confirm,
+  });
   const { server: memoryServer, store: memoryStore } = createMemoryServer("./data/sarah-memory.db");
 
   const rl = readline.createInterface({ input, output });
