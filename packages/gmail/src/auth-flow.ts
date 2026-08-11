@@ -22,7 +22,25 @@ import { saveRefreshToken } from "./keychain.js";
  */
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+
+/**
+ * Fase 1: só `gmail.readonly`. Fase 3 (ações de e-mail) precisou
+ * ACRESCENTAR `gmail.compose`, não trocar — confirmado na documentação
+ * oficial da API (não assumido): `gmail.compose` sozinho NÃO permite
+ * ler mensagens (`users.messages.get` exige `gmail.readonly`,
+ * `gmail.modify` ou `gmail.metadata` — `gmail.compose` não está nessa
+ * lista), e `gmail.readonly` sozinho não permite criar rascunho
+ * (`users.drafts.create`/`update` exigem `gmail.compose` ou
+ * `gmail.modify`). `gmail.get_message` e `gmail.reply_draft` (que
+ * precisa ler a mensagem original pra montar a resposta) exigem os
+ * dois escopos juntos. Ver docs/architecture.md pra fonte e detalhes
+ * completos, incluindo a limitação aceita: `gmail.compose` também
+ * permite ENVIAR (não existe escopo mais restrito só-rascunho do lado
+ * do Google) — a garantia de "nunca envia" é do nosso código
+ * (client.ts só chama o endpoint de criar draft, nunca o de enviar),
+ * não da permissão OAuth.
+ */
+const SCOPE = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose";
 
 function base64url(buf: Buffer): string {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -81,7 +99,7 @@ function waitForCallback(clientId: string, codeChallenge: string, state: string)
       authUrl.searchParams.set("code_challenge", codeChallenge);
       authUrl.searchParams.set("code_challenge_method", "S256");
 
-      console.log("Abrindo o navegador pra autorizar a SARAH a ler seu Gmail...");
+      console.log("Abrindo o navegador pra autorizar a SARAH a ler seu Gmail e gerenciar rascunhos...");
       console.log("Se não abrir sozinho, acesse:\n" + authUrl.toString() + "\n");
       spawn("open", [authUrl.toString()], { stdio: "ignore", detached: true }).unref();
     });

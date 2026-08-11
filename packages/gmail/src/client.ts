@@ -75,10 +75,15 @@ function buildApiError(status: number, body: GmailApiErrorBody | null): Error {
   return new Error(`Gmail API respondeu ${status}: ${message}`);
 }
 
-async function gmailFetch(path: string): Promise<any> {
+async function gmailFetch(path: string, init: RequestInit = {}): Promise<any> {
   const accessToken = await getAccessToken();
   const res = await fetch(`${GMAIL_API_BASE}${path}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
   });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
@@ -132,4 +137,203 @@ export async function listRecentEmails(input: ListRecentEmailsInput = {}): Promi
   );
 
   return emails;
+}
+
+// ---------------------------------------------------------------------
+// Fase 3: leitura de corpo completo (get_message) e rascunhos
+// (create_draft / reply_draft). NUNCA chama o endpoint de enviar — só
+// /messages (leitura) e /drafts (criação). Ver docs/architecture.md
+// pra decisão registrada sobre o escopo gmail.compose (também permite
+// enviar do lado da API do Google; a garantia de "nunca envia" é
+// deste código, não da permissão OAuth).
+// ---------------------------------------------------------------------
+
+function base64UrlDecode(data: string): string {
+  const normalized = data.replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(normalized, "base64").toString("utf-8");
+}
+
+function base64Url(buf: Buffer): string {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+interface GmailMessagePart {
+  mimeType?: string;
+  body?: { data?: string };
+  parts?: GmailMessagePart[];
+}
+
+/** Busca em profundidade pela primeira parte MIME de um tipo específico. */
+function findPartByMimeType(part: GmailMessagePart, mimeType: string): string | null {
+  if (part.mimeType === mimeType && part.body?.data) {
+    return base64UrlDecode(part.body.data);
+  }
+  if (part.parts) {
+    for (const sub of part.parts) {
+      const found = findPartByMimeType(sub, mimeType);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+/**
+ * Conversão HTML→texto BEM simples (só fallback, quando o e-mail não
+ * tem parte text/plain — alguns e-mails só mandam text/html). Não
+ * tenta preservar formatação, só extrair texto legível: fora do
+ * escopo "texto simples" tentar renderizar HTML de verdade.
+ */
+function stripHtml(html: string): string {
+  return html
+    .replace(/<(br|\/p|\/div|\/tr)\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** text/plain se existir; senão text/html convertido (best-effort); senão um aviso. */
+function extractBody(payload: GmailMessagePart): string {
+  const plain = findPartByMimeType(payload, "text/plain");
+  if (plain !== null) return plain;
+  const html = findPartByMimeType(payload, "text/html");
+  if (html !== null) return stripHtml(html);
+  return "(sem corpo em texto disponível pra este e-mail)";
+}
+
+export interface FullEmail {
+  id: string;
+  threadId: string;
+  from: string;
+  to: string;
+  subject: string;
+  date: string;
+  body: string;
+}
+
+/**
+ * Corpo completo de UM e-mail específico, sob demanda — diferente de
+ * `listRecentEmails` (só metadados/snippet, ver comentário lá). Busca
+ * `format=full` só quando o agente realmente precisa do conteúdo
+ * inteiro (ex.: pra responder), não em toda listagem — mesmo
+ * princípio de minimizar dado puxado da Fase 1.
+ */
+export async function getMessage(messageId: string): Promise<FullEmail> {
+  const msg = await gmailFetch(`/messages/${messageId}?format=full`);
+  const headers = Object.fromEntries(
+    ((msg.payload?.headers ?? []) as Array<{ name: string; value: string }>).map((h) => [h.name, h.value])
+  );
+  return {
+    id: msg.id,
+    threadId: msg.threadId,
+    from: headers.From ?? "(desconhecido)",
+    to: headers.To ?? "",
+    subject: headers.Subject ?? "(sem assunto)",
+    date: headers.Date ?? "",
+    body: extractBody(msg.payload ?? {}),
+  };
+}
+
+function encodeHeaderText(text: string): string {
+  // RFC 2047 — sempre codifica (mesmo texto puro ASCII decodifica
+  // igual em qualquer cliente compatível), evita ter que detectar
+  // "tem acento ou não" e lidar com os dois casos separadamente.
+  return `=?UTF-8?B?${Buffer.from(text, "utf-8").toString("base64")}?=`;
+}
+
+interface BuildRawMessageInput {
+  to: string;
+  subject: string;
+  bodyText: string;
+  inReplyTo?: string;
+  references?: string;
+}
+
+/**
+ * Monta a mensagem RFC 2822 crua que a API do Gmail espera no campo
+ * `raw` (base64url do e-mail inteiro, cabeçalhos + corpo). Corpo
+ * sempre em base64 com `Content-Transfer-Encoding: base64` — evita
+ * qualquer ambiguidade sobre bytes UTF-8 (acentos) trafegando "crus".
+ */
+function buildRawMessage(input: BuildRawMessageInput): string {
+  const bodyBase64 = Buffer.from(input.bodyText, "utf-8").toString("base64");
+  const headerLines = [`To: ${input.to}`, `Subject: ${encodeHeaderText(input.subject)}`];
+  if (input.inReplyTo) headerLines.push(`In-Reply-To: ${input.inReplyTo}`);
+  if (input.references) headerLines.push(`References: ${input.references}`);
+  headerLines.push(`MIME-Version: 1.0`, `Content-Type: text/plain; charset="UTF-8"`, `Content-Transfer-Encoding: base64`);
+
+  const raw = headerLines.join("\r\n") + "\r\n\r\n" + bodyBase64;
+  return base64Url(Buffer.from(raw, "utf-8"));
+}
+
+export interface CreateDraftInput {
+  to: string;
+  subject: string;
+  body: string;
+}
+
+export interface DraftResult {
+  id: string;
+  threadId?: string;
+}
+
+/** Rascunho novo, sem thread — nunca envia, só cria (POST /drafts). */
+export async function createDraft(input: CreateDraftInput): Promise<DraftResult> {
+  const raw = buildRawMessage({ to: input.to, subject: input.subject, bodyText: input.body });
+  const draft = await gmailFetch(`/drafts`, {
+    method: "POST",
+    body: JSON.stringify({ message: { raw } }),
+  });
+  return { id: draft.id, threadId: draft.message?.threadId };
+}
+
+export interface ReplyDraftInput {
+  messageId: string;
+  body: string;
+}
+
+/**
+ * Rascunho de RESPOSTA a um e-mail existente — mesma thread, mesmo
+ * assunto (com "Re:" só se ainda não tiver), `In-Reply-To`/
+ * `References` corretos apontando pro `Message-ID` (cabeçalho RFC, não
+ * o `id` do Gmail) do e-mail original, pra aparecer encadeado de
+ * verdade no cliente de e-mail, não como mensagem solta. Busca só os
+ * headers necessários (`format=metadata`), não o corpo — não precisa
+ * do conteúdo do e-mail original pra montar a resposta.
+ */
+export async function replyDraft(input: ReplyDraftInput): Promise<DraftResult> {
+  const original = await gmailFetch(
+    `/messages/${input.messageId}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Message-ID&metadataHeaders=References`
+  );
+  const headers = Object.fromEntries(
+    ((original.payload?.headers ?? []) as Array<{ name: string; value: string }>).map((h) => [h.name, h.value])
+  );
+
+  const from = headers.From;
+  if (!from) {
+    throw new Error(`Não encontrei o remetente do e-mail ${input.messageId} — não dá pra montar a resposta.`);
+  }
+  const originalSubject = headers.Subject ?? "(sem assunto)";
+  const subject = /^re:/i.test(originalSubject.trim()) ? originalSubject : `Re: ${originalSubject}`;
+  const messageIdHeader = headers["Message-ID"];
+  const references = [headers.References, messageIdHeader].filter(Boolean).join(" ") || undefined;
+
+  const raw = buildRawMessage({
+    to: from,
+    subject,
+    bodyText: input.body,
+    inReplyTo: messageIdHeader,
+    references,
+  });
+
+  const draft = await gmailFetch(`/drafts`, {
+    method: "POST",
+    body: JSON.stringify({ message: { raw, threadId: original.threadId } }),
+  });
+  return { id: draft.id, threadId: draft.message?.threadId ?? original.threadId };
 }

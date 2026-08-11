@@ -598,6 +598,99 @@ Escopo: só título, conteúdo em texto simples (opcional) e pasta
 de scripting cobre com confiança). Sem anexos, sem formatação rica,
 sem tags.
 
+## Decisões e bugs encontrados na Fase 3, parte 2 (ações de e-mail: Gmail)
+
+**Correção da premissa inicial, confirmada na documentação oficial da
+API antes de escrever qualquer código** (não assumida): o pedido
+original considerava trocar o escopo OAuth de `gmail.readonly` pra
+`gmail.compose`. Isso quebraria a leitura — `gmail.compose` sozinho
+NÃO permite ler mensagens. Conferido na referência oficial de cada
+método (`developers.google.com/workspace/gmail/api/reference/rest/v1`):
+
+- `users.messages.get` (usado por `get_message`, e internamente por
+  `reply_draft` pra montar a resposta) exige um destes escopos:
+  `https://mail.google.com/`, `gmail.modify`, `gmail.readonly` ou
+  `gmail.metadata` — `gmail.compose` não está nessa lista.
+- `users.drafts.create`/`users.drafts.update` (usado por
+  `create_draft`/`reply_draft`) exigem `https://mail.google.com/`,
+  `gmail.modify` ou `gmail.compose`.
+
+Ou seja: os dois escopos são necessários **juntos**, não um no lugar
+do outro. `auth-flow.ts` agora pede
+`gmail.readonly gmail.compose` (espaço-separado, um único parâmetro
+`scope`) — reautorizado rodando `pnpm gmail:auth` de novo (o refresh
+token anterior só tinha `readonly`, precisou gerar um novo).
+
+**LIMITAÇÃO ACEITA, documentada aqui de propósito (mesmo padrão das
+outras decisões já registradas — modo Testing do Gmail, sem cache de
+schema do Notion etc.): `gmail.compose` também permite ENVIAR
+e-mail/rascunho do lado da API do Google — não existe um escopo OAuth
+mais restrito, só-rascunho, nessa API.** A garantia de "a SARAH nunca
+envia e-mail" não vem da permissão OAuth (ela tecnicamente permitiria);
+vem do CÓDIGO: `packages/gmail/src/client.ts` só chama
+`POST /drafts` (criar rascunho), nunca `POST
+/messages/send` ou `POST /drafts/{id}/send` — esses dois endpoints não
+aparecem em nenhum lugar deste pacote, de propósito, e não há
+`gmail.send_*` nem qualquer tool de enviar registrada (decisão de
+projeto desde a primeira mensagem). Isso é diferente de todas as
+outras tools deste projeto, cujo baixo risco é reforçado tanto pelo
+código quanto pelo escopo de acesso concedido — aqui o escopo é mais
+amplo que o necessário, e a única barreira real é não ter escrito
+(nem nunca escrever) o código que chamaria enviar.
+
+**Mecânica de montar/ler e-mail (RFC 2822 cru), tudo novo nesta fase:**
+
+- A API do Gmail espera o e-mail inteiro (cabeçalhos + corpo) como uma
+  string RFC 2822 crua, codificada em base64url, no campo `raw` de
+  `POST /drafts`. Corpo sempre em `Content-Transfer-Encoding: base64`
+  (não texto "cru" no meio dos cabeçalhos) — evita qualquer ambiguidade
+  com bytes UTF-8 (acentos) trafegando fora de um encoding declarado
+  explicitamente.
+- `Subject` sempre codificado em RFC 2047 (`=?UTF-8?B?...?=`) — mais
+  simples que detectar "tem acento ou não" e tratar os dois casos
+  separado; decodifica igual num cliente de e-mail compatível mesmo
+  quando o texto é só ASCII.
+- **`reply_draft` busca só os headers do e-mail original**
+  (`format=metadata`, não `format=full`) — não precisa do corpo pra
+  montar a resposta, só `Subject` (pra prefixar "Re:" — sem duplicar
+  se já tiver), `From` (vira o `To` da resposta), `Message-ID` e
+  `References` (pra virar `In-Reply-To`/`References` da resposta,
+  fazendo aparecer encadeada na thread de verdade, não como e-mail
+  solto) e o `threadId` do Gmail (sempre presente independente do
+  `format`). Mesmo princípio de minimizar dado puxado já registrado na
+  Fase 1.
+- `get_message` (corpo completo, sob demanda) extrai a parte
+  `text/plain` do payload MIME (que pode ser multipart, busca em
+  profundidade recursiva); se o e-mail só tiver `text/html` (alguns
+  têm), faz uma conversão HTML→texto BEM simples como fallback (troca
+  `<br>`/`</p>`/`</div>` por quebra de linha, remove o resto das tags,
+  decodifica só as entidades HTML mais comuns) — não tenta preservar
+  formatação, só extrair texto legível, mesmo princípio "texto
+  simples" do resto do projeto.
+
+**Validado rodando de verdade, incluindo inspeção direta pela API do
+Gmail** (não só pelo texto do agente nem pelo app Gmail visualmente —
+os headers e o `labelIds` do rascunho foram conferidos programaticamente):
+
+- `abre o e-mail da Mottu sobre o Trainee 2026.2 e cria um rascunho de
+  resposta agradecendo...` → chamou `get_message` (leu o corpo real do
+  e-mail original) e depois `reply_draft`, sem pedir confirmação (baixo
+  risco). Audit log confirma as duas chamadas, `risk: low`, `decision:
+  auto-allow`.
+- Rascunho conferido direto pela API do Gmail (`GET /drafts`,
+  `GET /drafts/{id}?format=full`): `labelIds: ["DRAFT"]` (nunca
+  `SENT`), `Subject: "Re: Confirmação de Inscrição..."` (um só "Re:",
+  sem duplicar), `In-Reply-To`/`References` apontando pro
+  `Message-ID` certo do e-mail original, `threadId` do rascunho igual
+  ao `id` do e-mail original (confirma que ficou na mesma thread), e o
+  corpo decodificado batendo exatamente com o texto pedido, acentos
+  preservados.
+- `create_draft` (sem thread) testado separado: mesma verificação —
+  `labelIds: ["DRAFT"]`, sem `In-Reply-To`/`References` (correto, não
+  é resposta a nada).
+- Os dois rascunhos de teste foram apagados depois (`DELETE
+  /drafts/{id}`, confirmado `resultSizeEstimate: 0` na lista depois).
+
 ## Status atual
 
 Fase 0 (fundação) e Fase 1 (Apple Calendar via EventKit) implementadas
@@ -831,8 +924,11 @@ revalidação foram removidos depois.
    preferências via `systemPrompt` — e memória de SESSÃO via `resume`
    do Agent SDK, corrigida nesta mesma fase). **(Fase 2 completa)**
 3. Apple Notes (**feito**: list_notes + create_note, scripting via
-   `Application("Notes")`) + ações de e-mail (responder/rascunho) com
-   confirmação. **(Fase 3 em andamento — falta só e-mail)**
+   `Application("Notes")`) + ações de e-mail (**feito**: get_message,
+   create_draft, reply_draft — SÓ rascunho, nunca envia; baixo risco,
+   não alto risco como o roadmap original previa, ver justificativa na
+   seção da Fase 3 acima: criar rascunho é aditivo/reversível, igual
+   criar evento/lembrete/nota). **(Fase 3 completa)**
 4. App de menu bar nativo substituindo o terminal; voz opcional.
 5. Agente de código: sandbox Docker por projeto, criação de projetos, git.
 6. GitHub completo (commits, PRs) + deploy de sites.
@@ -842,10 +938,12 @@ revalidação foram removidos depois.
 
 ## Próximo passo concreto
 
-**Fase 3 está em andamento**: Apple Notes feito e validado rodando de
-verdade (`list_notes`/`create_note`, mesmo padrão de risco/Gateway das
-outras integrações — ver bugs reais encontrados no scripting do
-Notes.app, diferentes dos do EventKit, na seção acima). Falta só
-**ações de e-mail (responder/rascunho) com confirmação** — a única
-peça de escrita em e-mail, deliberadamente de alto risco, diferente da
-leitura já feita na Fase 1 — pra fechar a fase inteira.
+**Fase 3 está completa**: Apple Notes (`list_notes`/`create_note`) e
+ações de e-mail (`get_message`/`create_draft`/`reply_draft`) feitas e
+validadas rodando de verdade, incluindo inspeção direta pela API do
+Gmail (não só pelo texto do agente) confirmando que os rascunhos nunca
+saem como enviados (`labelIds: ["DRAFT"]`) e ficam corretamente
+encadeados na thread original quando é resposta. Decisão permanente
+mantida: nenhuma tool de ENVIAR e-mail foi ou será implementada nesta
+fase — só leitura e rascunho. Próximo passo é a Fase 4: app de menu
+bar nativo substituindo o terminal, com voz opcional.

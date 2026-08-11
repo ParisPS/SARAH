@@ -37,11 +37,20 @@ const LOW_RISK_TOOLS = new Set<string>([
   // sobrescreve nenhum lembrete existente).
   "mcp__sarah-apple-reminders__list_reminders",
   "mcp__sarah-apple-reminders__create_reminder",
-  // Gmail (leitura): list_recent_emails usa só o escopo OAuth
-  // `gmail.readonly` — leitura pura, sem nenhum efeito colateral
-  // possível (não envia, não apaga, não marca como lido). Ainda mais
-  // claramente baixo risco que list_events/list_reminders.
+  // Gmail (leitura): list_recent_emails/get_message usam só leitura —
+  // sem nenhum efeito colateral possível (não envia, não apaga, não
+  // marca como lido). Ainda mais claramente baixo risco que
+  // list_events/list_reminders.
   "mcp__sarah-gmail__list_recent_emails",
+  "mcp__sarah-gmail__get_message",
+  // Gmail (rascunhos, Fase 3): create_draft/reply_draft são aditivos e
+  // reversíveis — criar um rascunho não afeta ninguém, o e-mail nunca
+  // sai da caixa de saída (o código nunca chama o endpoint de enviar,
+  // ver packages/gmail/src/client.ts e docs/architecture.md). Uma
+  // eventual tool de ENVIAR (nunca implementada, decisão de projeto)
+  // ficaria de fora desta lista — essa sim de alto risco de verdade.
+  "mcp__sarah-gmail__create_draft",
+  "mcp__sarah-gmail__reply_draft",
   // Memória persistente: remember é aditivo (nunca sobrescreve/apaga),
   // recall é leitura pura — mesma justificativa de sempre. forget
   // (exclusão permanente) fica DE FORA de propósito: cai no fail-safe
