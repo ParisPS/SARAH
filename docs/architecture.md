@@ -321,6 +321,43 @@ qualquer porta em `http://127.0.0.1:*` sem pré-cadastrar a URI exata
 e falharia com `redirect_uri_mismatch`). Documentado no
 `.env.example`.
 
+**DECISÃO PERMANENTE ACEITA: o app OAuth fica em modo "Testing" de
+propósito — não é pendência, é escolha deliberada.** O Google exige um
+processo de verificação (inclusive auditoria de segurança paga, CASA
+Tier 2, pra escopos "restritos" como `gmail.readonly`) pra tirar um
+app OAuth do modo "Testing" e publicá-lo "In production" sem limite de
+usuários/tempo de token. Isso existe pra proteger usuários de apps de
+terceiros distribuídos em massa — não se aplica ao caso de uso daqui
+(um único usuário, o próprio dono do projeto, autorizando a própria
+conta). Não vale o custo/esforço pra um assistente pessoal de um
+usuário só, e não está no roadmap fazer isso.
+
+**Consequência aceita, não bug:** em modo "Testing", o Google expira o
+refresh token a cada ~7 dias (diferente de apps "In production", cujo
+refresh token dura indefinidamente até ser revogado). Isso significa
+reautorizar rodando `pnpm gmail:auth` manualmente mais ou menos uma
+vez por semana — **é esperado, é do Google, não é bug deste código.**
+Se `gmail.list_recent_emails` passar a falhar com a mensagem "Refresh
+token do Gmail inválido, expirado ou revogado..." depois de alguns
+dias sem uso, a ação certa é rodar `pnpm gmail:auth` de novo, não
+investigar como se fosse regressão de código. (Nota pra quem ler isso
+daqui a uns meses, inclusive eu mesmo: se esse comportamento virar
+incômodo real no dia a dia, a alternativa é completar a verificação do
+Google — mas isso é decisão consciente de trocar custo por
+conveniência, não correção de bug.)
+
+**Validado contra a API real do Google** (não só lido no código):
+salvei um refresh token inválido no Keychain (sobrescrevendo
+temporariamente o real, que foi restaurado logo em seguida) e chamei
+`listRecentEmails` de verdade — o Google respondeu com `invalid_grant`
+e `buildAuthError` (`packages/gmail/src/client.ts`) devolveu a
+mensagem clara esperada, em vez de um erro genérico. Esse é
+exatamente o formato de erro que o Google devolve tanto pra token
+expirado (~7 dias em modo Testing) quanto pra token revogado
+manualmente em myaccount.google.com/permissions — `invalid_grant` é o
+código padrão da RFC 6749 pra "esse grant não é mais válido", cobrindo
+os dois casos com a mesma mensagem já tratada.
+
 **Armazenamento do refresh token: Keychain do macOS via `security`
 CLI**, não arquivo/`.env` — mesmo padrão de "chamar um binário do
 sistema via `child_process` e tratar stdout/stderr" já usado no bridge
