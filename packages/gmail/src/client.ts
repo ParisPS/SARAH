@@ -337,3 +337,61 @@ export async function replyDraft(input: ReplyDraftInput): Promise<DraftResult> {
   });
   return { id: draft.id, threadId: draft.message?.threadId ?? original.threadId };
 }
+
+// ---------------------------------------------------------------------
+// Envio de rascunho JÁ EXISTENTE — a única ação irreversível de e-mail
+// deste projeto, decisão deliberada (registrada em
+// docs/architecture.md). NUNCA existe uma tool de "compor e enviar
+// direto": o fluxo sempre passa por create_draft/reply_draft primeiro.
+// Confirmado na documentação oficial da API antes de implementar (não
+// assumido a partir da fase anterior): `users.drafts.send` aceita o
+// escopo `gmail.compose` já autorizado — não precisou reautorizar.
+// ---------------------------------------------------------------------
+
+export interface DraftPreview {
+  id: string;
+  to: string;
+  subject: string;
+  /** Corpo truncado se for longo — é só um preview pra confirmação, não o conteúdo completo. */
+  bodyPreview: string;
+}
+
+const DRAFT_PREVIEW_BODY_LIMIT = 500;
+
+/**
+ * Busca o conteúdo de um rascunho pra exibição legível ANTES de pedir
+ * confirmação de envio (ver `formatConfirmationInput` em
+ * packages/core/src/index.ts) — Para/Assunto/corpo, não o `draftId`
+ * cru. Um rascunho, por baixo, é um `message` com a mesma estrutura de
+ * payload MIME de um e-mail normal — reaproveita `extractBody`.
+ */
+export async function getDraftPreview(draftId: string): Promise<DraftPreview> {
+  const draft = await gmailFetch(`/drafts/${draftId}?format=full`);
+  const headers = Object.fromEntries(
+    ((draft.message?.payload?.headers ?? []) as Array<{ name: string; value: string }>).map((h) => [h.name, h.value])
+  );
+  const body = extractBody(draft.message?.payload ?? {});
+  const bodyPreview =
+    body.length > DRAFT_PREVIEW_BODY_LIMIT ? body.slice(0, DRAFT_PREVIEW_BODY_LIMIT) + "…" : body;
+
+  return {
+    id: draftId,
+    to: headers.To ?? "(sem destinatário)",
+    subject: headers.Subject ?? "(sem assunto)",
+    bodyPreview,
+  };
+}
+
+export interface SendDraftResult {
+  id: string;
+  threadId?: string;
+}
+
+/** Envia um rascunho que já existe. NUNCA chamado a partir de nenhum outro lugar deste pacote a não ser a tool `send_draft`. */
+export async function sendDraft(draftId: string): Promise<SendDraftResult> {
+  const result = await gmailFetch(`/drafts/send`, {
+    method: "POST",
+    body: JSON.stringify({ id: draftId }),
+  });
+  return { id: result.id, threadId: result.threadId };
+}

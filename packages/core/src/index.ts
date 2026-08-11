@@ -7,7 +7,7 @@ import { fixturesServer } from "@sarah/fixtures";
 import { appleCalendarServer } from "@sarah/apple-calendar";
 import { notionServer } from "@sarah/notion";
 import { appleRemindersServer } from "@sarah/apple-reminders";
-import { gmailServer } from "@sarah/gmail";
+import { gmailServer, getDraftPreview } from "@sarah/gmail";
 import { createMemoryServer } from "@sarah/memory";
 import { appleNotesServer } from "@sarah/apple-notes";
 
@@ -40,6 +40,14 @@ import { appleNotesServer } from "@sarah/apple-notes";
  * execução do processo — reseta ao encerrar (esperado: memória de
  * sessão não é memória persistente, essa é a responsabilidade de
  * @sarah/memory, ver abaixo).
+ *
+ * `send_draft` (Gmail): única tool de ALTO risco deste projeto que
+ * ganhou uma confirmação melhorada — ver `formatConfirmationInput`
+ * abaixo, injetado no Gateway pra buscar e mostrar o conteúdo do
+ * rascunho (Para/Assunto/corpo) antes de perguntar "(s/n)", em vez do
+ * `draftId` cru. Só o core conhece @sarah/gmail o suficiente pra fazer
+ * isso — @sarah/permissions continua sem depender de nenhum pacote de
+ * tool específico, só recebe a função pronta.
  *
  * Memória PERSISTENTE (sobrevive a reiniciar o processo, diferente do
  * `resume` acima): @sarah/memory guarda fatos/preferências em SQLite
@@ -92,9 +100,35 @@ const BUILTIN_TOOLS_TO_BLOCK = [
   "mcp__claude_ai_Gmail__*",
 ];
 
+/**
+ * Formatador de confirmação pro Gateway (ver `FormatConfirmationInput`
+ * em @sarah/permissions) — só a tool `send_draft` tem tratamento
+ * especial hoje: é a ação de maior consequência real do projeto até
+ * agora (a única de e-mail verdadeiramente irreversível), então busca
+ * o conteúdo do rascunho ANTES de pedir confirmação e mostra de forma
+ * legível (Para/Assunto/corpo), em vez do `draftId` cru em JSON. Erro
+ * ao buscar (ex.: rascunho já apagado) cai pro fallback padrão do
+ * Gateway — não bloqueia a confirmação em si, só perde o preview
+ * bonito nesse caso raro.
+ */
+async function formatConfirmationInput(toolName: string, toolInput: unknown): Promise<string | null> {
+  if (toolName !== "mcp__sarah-gmail__send_draft") return null;
+
+  const { draftId } = toolInput as { draftId?: string };
+  if (!draftId) return null;
+
+  const draft = await getDraftPreview(draftId);
+  return (
+    `   Rascunho a enviar:\n` +
+    `   Para: ${draft.to}\n` +
+    `   Assunto: ${draft.subject}\n` +
+    `   Corpo: ${draft.bodyPreview}`
+  );
+}
+
 export async function runSarah(): Promise<void> {
   const audit = new AuditLog("./data/sarah.db");
-  const canUseTool = createGateway({ onDecision: (entry) => audit.record(entry) });
+  const canUseTool = createGateway({ onDecision: (entry) => audit.record(entry), formatConfirmationInput });
   const { server: memoryServer, store: memoryStore } = createMemoryServer("./data/sarah-memory.db");
 
   const rl = readline.createInterface({ input, output });
@@ -105,7 +139,7 @@ export async function runSarah(): Promise<void> {
       "o calendário principal), 'cria um evento no Apple Calendar amanhã às 15h', " +
       "'cria um lembrete pra ligar pro dentista', 'resuma meus e-mails de hoje', " +
       "'lembra que...' (guarda uma preferência ou fato), 'o que você sabe sobre mim?', " +
-      "'lista minhas notas' ou 'cria uma nota com...'\n"
+      "'lista minhas notas', 'cria uma nota com...' ou 'envia o rascunho <id>' (pede confirmação)\n"
   );
 
   // Session ID da conversa atual, capturado da mensagem system/init da

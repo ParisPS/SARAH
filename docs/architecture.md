@@ -691,6 +691,85 @@ os headers e o `labelIds` do rascunho foram conferidos programaticamente):
 - Os dois rascunhos de teste foram apagados depois (`DELETE
   /drafts/{id}`, confirmado `resultSizeEstimate: 0` na lista depois).
 
+## Decisões e bugs encontrados na Fase 3, parte 3 (envio de e-mail: `send_draft`)
+
+**Não é reversão da decisão de "nunca implementar tool de enviar" —
+é essa decisão deliberada acontecendo.** Até aqui (partes 1 e 2 desta
+fase), a regra era "só leitura e rascunho, nunca enviar", registrada
+como decisão permanente desde a primeira mensagem do projeto. O
+usuário decidiu, de propósito e explicitamente, autorizar o envio
+agora — com uma restrição que continua valendo, mais importante do
+que nunca: **NUNCA existe (nem vai existir) uma tool de "compor e
+enviar direto"**. `send_draft(draftId)` só envia um rascunho que JÁ
+EXISTE, criado antes por `create_draft`/`reply_draft` — o fluxo sempre
+passa por rascunho primeiro, sem exceção.
+
+**Escopo: confirmado na documentação oficial ANTES de implementar, não
+assumido a partir da fase anterior** (o usuário pediu explicitamente
+essa checagem, porque a decisão anterior podia ter sido imprecisa).
+`users.drafts.send` aceita `https://mail.google.com/`, `gmail.modify`
+ou `gmail.compose` — o escopo `gmail.compose` já autorizado na parte 2
+desta fase já cobre enviar, **não precisou reautorizar**. Isso
+confirma (agora com certeza, verificado no endpoint exato que importa,
+não só na descrição geral do escopo) a limitação já registrada: não
+existe no Gmail um escopo OAuth que permita só rascunho e não envio —
+a garantia de "nunca enviava" nas partes 1/2 desta fase era inteiramente
+do código, nunca da permissão concedida.
+
+**Risco: ALTO, fora de `LOW_RISK_TOOLS`** — primeira ação
+verdadeiramente irreversível de e-mail do projeto. Diferente de criar
+rascunho (reversível: só apagar o rascunho), um e-mail enviado não
+pode ser desenviado.
+
+**Melhoria na confirmação, só pra esta tool**: o Gateway
+(`@sarah/permissions`) ganhou um `formatConfirmationInput` opcional —
+uma função injetada que pode substituir o `Entrada: {JSON cru}` padrão
+por um texto melhor formatado, específico da tool. `@sarah/permissions`
+continua sem depender de nenhum pacote de tool (não importa
+`@sarah/gmail` nem sabe que ele existe) — só chama a função que
+`packages/core/src/index.ts` injeta, que aí sim conhece
+`getDraftPreview` do `@sarah/gmail` (busca o rascunho pela API antes
+de perguntar `(s/n)`, mostra Para/Assunto/corpo — corpo truncado em
+500 caracteres se for longo, é só um preview pra decisão, não o
+conteúdo completo). Falha ao buscar o preview (ex.: rascunho já foi
+apagado nesse meio-tempo) cai pro fallback padrão em vez de travar a
+confirmação.
+
+**Validado rodando de verdade, com inspeção direta pela API do Gmail
+(não só o texto do agente):**
+
+- Criei um rascunho de teste **pra mim mesmo**
+  (`paris.perez.s@gmail.com`, nunca pra terceiros), depois pedi
+  `envia o rascunho <id>`.
+- A tela de confirmação mostrou exatamente o formato pedido, não o
+  JSON cru:
+  ```
+  ⚠️  Ação de ALTO RISCO solicitada: mcp__sarah-gmail__send_draft
+     Rascunho a enviar:
+     Para: paris.perez.s@gmail.com
+     Assunto: Teste SARAH send_draft
+     Corpo: Validação real do envio na Fase 3 — se isso chegou na sua caixa de entrada, o send_draft funcionou. Pode apagar.
+     Confirmar execução? (s/n)
+  ```
+- Respondi "s" → confirmado no audit log: `mcp__sarah-gmail__send_draft`,
+  `risk: high`, `decision: confirmed` (diferente de todo o resto da
+  Fase 3, que é `risk: low`/`auto-allow`).
+- Conferido DIRETO pela API do Gmail (`GET /messages/{id}`, não só a
+  resposta do agente nem o app Gmail visualmente): `labelIds:
+  ["SENT", "INBOX"]` — realmente saiu e chegou na caixa de entrada
+  (era pra mim mesmo), headers `To`/`Subject`/`From` corretos.
+- **Limpeza incompleta, e isso é informativo**: tentei mover o e-mail
+  de teste pra lixeira via API (`messages.trash`) depois de confirmar
+  o teste, e recebi `403` — esse endpoint exige `gmail.modify` ou
+  `https://mail.google.com/`, escopos que este projeto não tem (nem
+  pediu). Não vale a pena pedir um escopo mais amplo só por
+  conveniência de limpar um teste — reforça, na prática, que o escopo
+  concedido continua sendo exatamente o mínimo necessário pras quatro
+  tools de e-mail que existem (ler, rascunhar, responder, enviar
+  rascunho), nem um pouco mais. O e-mail de teste ("Teste SARAH
+  send_draft") ficou na caixa de entrada do usuário, marcado no
+  próprio corpo como descartável — removido manualmente por ele depois.
+
 ## Status atual
 
 Fase 0 (fundação) e Fase 1 (Apple Calendar via EventKit) implementadas
@@ -857,6 +936,24 @@ quebra de linha, pasta "Recently Deleted" vazando na listagem):
   bugs acima) foram removidas depois — confirmado que sumiram da
   pasta "Notes" numa listagem final.
 
+**`send_draft` (envio real de e-mail, decisão deliberada) também
+validado rodando de verdade**, com inspeção direta pela API do Gmail
+em cada etapa (não só texto do agente nem o app Gmail visualmente):
+
+- Rascunho de teste criado pra mim mesmo, `envia o rascunho <id>` →
+  tela de confirmação mostrou Para/Assunto/corpo de forma legível
+  (não o `draftId` cru em JSON) — a melhoria de `formatConfirmationInput`
+  funcionando como esperado.
+- Confirmado com "s" → audit log: `mcp__sarah-gmail__send_draft`,
+  `risk: high`, `decision: confirmed` (a primeira entrada de alto
+  risco confirmado em e-mail neste projeto).
+- Conferido direto na API (`GET /messages/{id}`): `labelIds: ["SENT",
+  "INBOX"]` — realmente enviado, chegou na caixa de entrada.
+- Limpeza automática não foi possível (`messages.trash` exige escopo
+  que este projeto não tem, `gmail.modify`) — ver detalhes e a
+  justificativa de não pedir esse escopo na seção acima. E-mail de
+  teste removido manualmente pelo usuário.
+
 ## Renomeação: JARVIS → SARAH
 
 O projeto (e o assistente em si) foi renomeado de JARVIS pra SARAH —
@@ -925,10 +1022,10 @@ revalidação foram removidos depois.
    do Agent SDK, corrigida nesta mesma fase). **(Fase 2 completa)**
 3. Apple Notes (**feito**: list_notes + create_note, scripting via
    `Application("Notes")`) + ações de e-mail (**feito**: get_message,
-   create_draft, reply_draft — SÓ rascunho, nunca envia; baixo risco,
-   não alto risco como o roadmap original previa, ver justificativa na
-   seção da Fase 3 acima: criar rascunho é aditivo/reversível, igual
-   criar evento/lembrete/nota). **(Fase 3 completa)**
+   create_draft, reply_draft — baixo risco, aditivo/reversível — e
+   send_draft, **alto risco**, decisão deliberada de habilitar envio
+   real de um rascunho já existente, com confirmação melhorada
+   mostrando o conteúdo legível). **(Fase 3 completa)**
 4. App de menu bar nativo substituindo o terminal; voz opcional.
 5. Agente de código: sandbox Docker por projeto, criação de projetos, git.
 6. GitHub completo (commits, PRs) + deploy de sites.
@@ -939,11 +1036,16 @@ revalidação foram removidos depois.
 ## Próximo passo concreto
 
 **Fase 3 está completa**: Apple Notes (`list_notes`/`create_note`) e
-ações de e-mail (`get_message`/`create_draft`/`reply_draft`) feitas e
-validadas rodando de verdade, incluindo inspeção direta pela API do
-Gmail (não só pelo texto do agente) confirmando que os rascunhos nunca
-saem como enviados (`labelIds: ["DRAFT"]`) e ficam corretamente
-encadeados na thread original quando é resposta. Decisão permanente
-mantida: nenhuma tool de ENVIAR e-mail foi ou será implementada nesta
-fase — só leitura e rascunho. Próximo passo é a Fase 4: app de menu
-bar nativo substituindo o terminal, com voz opcional.
+o ciclo inteiro de e-mail (`get_message`/`create_draft`/`reply_draft`,
+baixo risco, e `send_draft`, alto risco — decisão deliberada, não
+reversão da cautela anterior) feitos e validados rodando de verdade,
+incluindo inspeção direta pela API do Gmail (não só pelo texto do
+agente): rascunhos nunca saem como enviados sozinhos
+(`labelIds: ["DRAFT"]`), ficam corretamente encadeados na thread
+original quando é resposta, e o envio real (`send_draft`) foi
+confirmado chegando na caixa de entrada (`labelIds: ["SENT",
+"INBOX"]`) só depois de uma confirmação de alto risco mostrando
+Para/Assunto/corpo de forma legível. Continua valendo, mais forte que
+nunca: nenhuma tool "compor e enviar direto" existe — o fluxo sempre
+passa por rascunho primeiro. Próximo passo é a Fase 4: app de menu bar
+nativo substituindo o terminal, com voz opcional.

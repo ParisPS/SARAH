@@ -51,6 +51,13 @@ const LOW_RISK_TOOLS = new Set<string>([
   // ficaria de fora desta lista — essa sim de alto risco de verdade.
   "mcp__sarah-gmail__create_draft",
   "mcp__sarah-gmail__reply_draft",
+  // `mcp__sarah-gmail__send_draft` fica DE FORA de propósito — cai no
+  // fail-safe de alto risco. É a primeira ação verdadeiramente
+  // irreversível de e-mail do projeto: diferente de criar rascunho, um
+  // e-mail enviado não pode ser "desenviado". Ver
+  // packages/core/src/index.ts pro formatConfirmationInput que busca
+  // o conteúdo do rascunho antes de pedir confirmação, em vez de só
+  // mostrar o draft_id cru.
   // Memória persistente: remember é aditivo (nunca sobrescreve/apaga),
   // recall é leitura pura — mesma justificativa de sempre. forget
   // (exclusão permanente) fica DE FORA de propósito: cai no fail-safe
@@ -69,10 +76,40 @@ export function classifyRisk(toolName: string): RiskLevel {
   return LOW_RISK_TOOLS.has(toolName) ? "low" : "high";
 }
 
-async function askConfirmation(toolName: string, toolInput: unknown): Promise<boolean> {
+/**
+ * Formatador opcional pra melhorar a exibição da confirmação de alto
+ * risco de uma tool específica — em vez do JSON cru do input (que pra
+ * `send_draft`, por exemplo, seria só `{"draftId": "r123..."}`, sem
+ * dizer PRA QUEM nem O QUÊ está sendo enviado). Recebe o nome
+ * qualificado da tool e o input; devolve o texto pronto pra mostrar,
+ * ou `null` (ou lança) pra cair no fallback padrão (JSON cru). Quem
+ * decide QUAL tool merece um formatador melhor é `packages/core`, que
+ * é o único lugar que já conhece todos os pacotes de tool — este
+ * pacote (`@sarah/permissions`) continua sem depender de nenhum deles
+ * diretamente, só chama o que for injetado.
+ */
+export type FormatConfirmationInput = (toolName: string, input: unknown) => Promise<string | null>;
+
+async function askConfirmation(
+  toolName: string,
+  toolInput: unknown,
+  formatConfirmationInput?: FormatConfirmationInput
+): Promise<boolean> {
   const rl = readline.createInterface({ input, output });
   console.log(`\n⚠️  Ação de ALTO RISCO solicitada: ${toolName}`);
-  console.log(`   Entrada: ${JSON.stringify(toolInput)}`);
+
+  let preview: string | null = null;
+  if (formatConfirmationInput) {
+    try {
+      preview = await formatConfirmationInput(toolName, toolInput);
+    } catch {
+      // Falha ao buscar/formatar o preview (ex.: draft já foi apagado)
+      // não deve impedir a confirmação — cai pro JSON cru abaixo.
+      preview = null;
+    }
+  }
+  console.log(preview ?? `   Entrada: ${JSON.stringify(toolInput)}`);
+
   const answer = await rl.question("   Confirmar execução? (s/n) ");
   rl.close();
   return answer.trim().toLowerCase() === "s";
@@ -88,6 +125,8 @@ export interface DecisionEntry {
 export interface GatewayOptions {
   /** Chamado toda vez que o Gateway decide algo — é aqui que o audit log se conecta. */
   onDecision?: (entry: DecisionEntry) => void;
+  /** Ver `FormatConfirmationInput` acima. */
+  formatConfirmationInput?: FormatConfirmationInput;
 }
 
 /**
@@ -105,7 +144,7 @@ export function createGateway(options: GatewayOptions = {}): CanUseTool {
       return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
     }
 
-    const approved = await askConfirmation(toolName, toolInput);
+    const approved = await askConfirmation(toolName, toolInput, options.formatConfirmationInput);
     options.onDecision?.({
       toolName,
       input: toolInput,

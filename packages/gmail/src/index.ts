@@ -1,6 +1,6 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { listRecentEmails, getMessage, createDraft, replyDraft } from "./client.js";
+import { listRecentEmails, getMessage, createDraft, replyDraft, sendDraft } from "./client.js";
 
 /**
  * Gmail — OAuth próprio da SARAH via GOOGLE_CLIENT_ID/
@@ -21,19 +21,23 @@ import { listRecentEmails, getMessage, createDraft, replyDraft } from "./client.
  * `gmail.compose` (ver auth-flow.ts pro porquê dos dois escopos
  * juntos, confirmado na documentação oficial da API, não assumido).
  *
- * DECISÃO PERMANENTE, desde a primeira mensagem deste projeto: NUNCA
- * implementar uma tool de ENVIAR e-mail. As tools abaixo só leem e
- * criam/atualizam rascunho — nenhuma chama o endpoint de enviar da
- * API do Gmail (ver client.ts). O usuário revisa e envia manualmente
- * pelo Gmail. Isso é garantido pelo CÓDIGO (o endpoint de enviar
- * nunca é chamado em lugar nenhum deste pacote), não pela permissão
- * OAuth — `gmail.compose` tecnicamente também permite enviar do lado
- * da API do Google; não existe escopo mais restrito só-rascunho (ver
- * docs/architecture.md, "limitação aceita").
+ * `send_draft` (mesma Fase 3, decisão deliberada tomada depois das
+ * outras três tools já estarem prontas e validadas — não é reversão
+ * de "nunca enviar sem decisão consciente", é essa decisão
+ * acontecendo): ENVIA um rascunho que já existe. Continua valendo,
+ * mais forte que nunca, a regra "nunca compor-e-enviar direto" — não
+ * existe (e não vai existir) uma tool que componha e envie no mesmo
+ * passo; o fluxo sempre passa por create_draft/reply_draft primeiro,
+ * e só depois, se o usuário confirmar de novo, send_draft. Alto risco
+ * (fora de LOW_RISK_TOOLS, ver @sarah/permissions) — é a única ação
+ * irreversível de e-mail deste projeto; um e-mail enviado não pode
+ * ser desenviado. A tela de confirmação mostra o conteúdo do rascunho
+ * de forma legível (Para/Assunto/corpo), não só o `draftId` cru — ver
+ * `formatConfirmationInput` em packages/core/src/index.ts.
  *
- * Baixo risco (ver LOW_RISK_TOOLS em @sarah/permissions) as quatro:
- * leitura pura (list_recent_emails/get_message) ou criação de
- * rascunho, aditiva e reversível — apagar um rascunho não afeta
+ * Baixo risco (ver LOW_RISK_TOOLS em @sarah/permissions) as quatro
+ * primeiras: leitura pura (list_recent_emails/get_message) ou criação
+ * de rascunho, aditiva e reversível — apagar um rascunho não afeta
  * ninguém, o e-mail nunca saiu.
  */
 const listRecent = tool(
@@ -146,9 +150,33 @@ const replyDraftTool = tool(
   }
 );
 
+const sendDraftTool = tool(
+  "send_draft",
+  "ENVIA um rascunho de e-mail que JÁ EXISTE (criado antes via create_draft ou reply_draft) — o " +
+    "e-mail sai de verdade, ação IRREVERSÍVEL. ALTO RISCO: pede confirmação antes de rodar. Esta " +
+    "tool NÃO cria nem edita rascunho, só envia um que já existe — pra compor e mandar algo novo, " +
+    "primeiro use create_draft ou reply_draft, e só depois send_draft com o `draftId` retornado. " +
+    "NUNCA tente compor e enviar no mesmo passo.",
+  {
+    draftId: z.string().describe("id do rascunho a enviar, obtido via create_draft ou reply_draft"),
+  },
+  async (args) => {
+    try {
+      const result = await sendDraft(args.draftId);
+      return { content: [{ type: "text", text: JSON.stringify({ ok: true, sent: result }, null, 2) }] };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ ok: false, error: String((err as Error).message) }, null, 2) }],
+      };
+    }
+  }
+);
+
 export const gmailServer = createSdkMcpServer({
   name: "sarah-gmail",
-  tools: [listRecent, getMessageTool, createDraftTool, replyDraftTool],
+  tools: [listRecent, getMessageTool, createDraftTool, replyDraftTool, sendDraftTool],
 });
 
 export { runInteractiveAuthFlow } from "./auth-flow.js";
+export { getDraftPreview } from "./client.js";
+export type { DraftPreview } from "./client.js";

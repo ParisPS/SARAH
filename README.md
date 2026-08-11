@@ -1,113 +1,127 @@
-# SARAH — Fase 0 + Fase 1 (Apple Calendar)
+# SARAH — Fases 0-3 completas
 
-Monorepo com Claude Agent SDK, Gateway de permissões e log de
-auditoria em SQLite (Fase 0), agora com a primeira integração real:
-**Apple Calendar via EventKit** (Fase 1) — `list_events` e
-`create_event`, chamadas por uma ponte JXA (`osascript -l
-JavaScript`), sem precisar de compilador nenhum. As tools de teste
-(`ping` / `pretend_delete`) continuam registradas como sanity check.
+Assistente pessoal rodando localmente no Mac, construído com o Claude
+Agent SDK: um Gateway de permissões baseado em risco na frente de
+toda tool, log de auditoria em SQLite, e integrações reais com apps
+do sistema e serviços externos. Cada fase é validada rodando de
+verdade (não só revisão de código) — o histórico completo de decisões
+e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md).
 
-**O que este código NÃO faz ainda (de propósito):** Notion, Apple
-Reminders/Notes, e-mail, GitHub, nenhum acesso a Bash/arquivos do seu
-computador pelo agente, nenhuma execução de código.
+**O que já funciona:**
+
+- **Fase 0** — fundação: Gateway de permissões (`@sarah/permissions`),
+  audit log em SQLite (`@sarah/audit`), tools de teste (`ping`/
+  `pretend_delete`) como sanity check.
+- **Fase 1** — integrações reais: Apple Calendar (`list_events`/
+  `create_event`, via EventKit/JXA), Notion Calendar (calendário
+  principal do usuário), Apple Reminders (`list_reminders`/
+  `create_reminder`, via EventKit/JXA), Gmail leitura
+  (`list_recent_emails`, OAuth próprio).
+- **Fase 2** — memória: `@sarah/memory` guarda fatos/preferências
+  persistentes em SQLite+FTS5 (`remember`/`recall`/`forget`), com
+  preferências influenciando automaticamente o comportamento de
+  outras tools (injeção via `systemPrompt`, sem depender do agente
+  decidir buscar). Memória de SESSÃO (conversa continuando entre
+  turnos dentro da mesma execução) via `resume` do Agent SDK.
+- **Fase 3** — Apple Notes (`list_notes`/`create_note`, scripting via
+  `Application("Notes")`) e o ciclo completo de e-mail: `get_message`
+  (corpo completo sob demanda), `create_draft`/`reply_draft`
+  (rascunhos, baixo risco) e `send_draft` (**envia um rascunho já
+  existente** — alto risco, decisão deliberada, com confirmação
+  mostrando o conteúdo legível antes de perguntar). Nenhuma tool
+  "compõe e envia" no mesmo passo — o fluxo sempre passa por rascunho
+  primeiro.
+
+**O que este código NÃO faz ainda (de propósito):** app de menu bar
+nativo (ainda é terminal), agente de código/sandbox, GitHub, deploy de
+sites, memória semântica — ver o roadmap completo em
+`docs/architecture.md`.
 
 ## Setup
 
 ```bash
 pnpm install
-cp .env.example .env   # se você ainda não usa `claude login` localmente
+cp .env.example .env
 pnpm dev
 ```
 
-Se você já roda o Claude Code na sua máquina e está autenticado, o
-Agent SDK reaproveita essa sessão e o `.env` pode nem ser necessário
-— nesse caso pode pular o `cp .env.example .env`.
+`.env` precisa, no mínimo, do `NOTION_API_KEY`/
+`NOTION_CALENDAR_DATABASE_ID` (Notion Calendar) e `GOOGLE_CLIENT_ID`/
+`GOOGLE_CLIENT_SECRET` (Gmail) — ver comentários em `.env.example`
+pra como conseguir cada um. Se você já usa Claude Code localmente e
+está autenticado, o Agent SDK reaproveita essa sessão pro
+`ANTHROPIC_API_KEY`.
+
+Antes do primeiro uso do Gmail, rode `pnpm gmail:auth` uma vez (abre o
+navegador, pede login/consentimento Google) — o refresh token fica no
+Keychain do macOS, nunca em arquivo. Reautorizar é necessário se o
+escopo pedido mudar (já aconteceu uma vez nesta fase) ou se o token
+expirar — o app OAuth roda em modo "Testing" de propósito (decisão
+registrada em `docs/architecture.md`), então o token expira a cada
+~7 dias.
 
 ## O que testar
 
-No prompt que abrir no terminal:
+No prompt que abrir no terminal, exemplos por fase:
 
-1. `me dê um ping com a mensagem oi` — deve rodar **direto**, sem
-   pedir confirmação (é a tool de baixo risco).
-2. `finja apagar o arquivo teste.txt` — deve **parar e perguntar**
-   "Confirmar execução? (s/n)" antes de rodar (é a tool de alto
-   risco). Responda `n` uma vez pra ver a negação funcionando, e `s`
-   outra vez pra ver a execução.
+**Fase 0**: `me dê um ping com a mensagem oi` (roda direto, baixo
+risco) / `finja apagar o arquivo teste.txt` (pede confirmação `(s/n)`,
+alto risco).
 
-Depois de rodar os dois, o arquivo `data/sarah.db` (SQLite) vai ter
-uma tabela `tool_calls` com o histórico de decisões — essa é a base
-do "SARAH, o que você fez hoje?" das próximas fases.
+**Fase 1**: `liste meus eventos de hoje` / `marca um compromisso
+amanhã às 15h` (Notion, padrão) / `cria um evento no Apple Calendar
+amanhã às 15h` (só se pedido explicitamente) / `cria um lembrete pra
+ligar pro dentista` / `resuma meus e-mails de hoje`.
 
-## O que testar (Fase 1 — Apple Calendar)
+**Fase 2**: `lembra que eu sempre quero lembretes na lista Trabalho
+por padrão` — reinicie o `pnpm dev` depois e peça `cria um lembrete
+pra revisar o relatório` sem especificar lista: deve usar "Trabalho"
+sozinho. `o que você sabe sobre mim?` recupera o que foi guardado.
 
-3. `liste meus eventos de hoje` — chama `list_events`. Na primeira
-   vez, o macOS deve mostrar um diálogo pedindo acesso ao Calendário
-   pro processo `osascript` — **precisa clicar em permitir**, não dá
-   pra automatizar essa parte. Depois de aprovado, roda direto, sem
-   pedir confirmação no terminal (baixo risco).
-4. `cria um evento de teste amanhã às 15h chamado "Teste SARAH"` —
-   chama `create_event`, também sem pedir confirmação. Confere no
-   app Calendário de verdade que o evento apareceu.
+**Fase 3**: `lista minhas notas` / `cria uma nota com...` / `abre o
+e-mail de fulano e cria um rascunho de resposta` (chama `get_message`
++ `reply_draft`, baixo risco, sem confirmação) / `envia o rascunho
+<id>` (chama `send_draft`, **alto risco** — deve mostrar Para/Assunto/
+corpo de forma legível e pedir confirmação antes de enviar de
+verdade).
 
-Se `list_events`/`create_event` derem erro, o mais provável é
-mensagem vindo da ponte JXA
-(`packages/apple-calendar/native/eventkit-bridge.js`) — o `bridge.ts`
-propaga o `stderr` do `osascript` na exceção, então a mensagem de
-erro já vem com contexto.
+A primeira chamada de cada integração do sistema (Calendar, Reminders,
+Notes) deve mostrar um diálogo do macOS pedindo permissão pro processo
+`osascript` — precisa clicar em permitir, não dá pra automatizar essa
+parte.
+
+`data/sarah.db` (SQLite) tem a tabela `tool_calls` com o histórico de
+todas as decisões do Gateway — é a base pra "SARAH, o que você fez
+hoje?".
 
 ## Por que o `dev` não usa watch mode
 
 De propósito. `tsx watch` reinicia o processo a cada mudança de
 arquivo — e como o audit log grava em `data/sarah.db`, dentro da
 própria pasta observada, cada tool call reiniciava a sessão sozinha.
-Pra um REPL que mantém estado (SQLite aberto, histórico da conversa),
-isso nunca é o que você quer. Se um dia quiser live-reload pra
-desenvolvimento, rode `tsx watch --ignore data src/main.ts`
-manualmente — só não deixe isso como o script padrão.
+Pra um REPL que mantém estado (SQLite aberto, histórico da conversa
+via `resume`), isso nunca é o que você quer. Se um dia quiser
+live-reload pra desenvolvimento, rode `tsx watch --ignore data
+src/main.ts` manualmente — só não deixe isso como o script padrão.
 
 ## Bug corrigido: `allowedTools` pulava o Gateway
 
 Na primeira versão deste código, os nomes das tools de teste estavam
 em `allowedTools`. Nesse SDK, isso **pré-aprova a tool antes do
-`canUseTool` ser consultado** — o próprio SDK avisa isso com o
-warning `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`. Na prática, o
-`pretend_delete` executava direto, sem pedir confirmação, e o audit
-log ficava vazio (porque `onDecision` só roda dentro do Gateway).
+`canUseTool` ser consultado** — o próprio SDK avisa isso com o warning
+`CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`. Correção: nenhuma tool deste
+projeto entra em `allowedTools` — todas "caem" no `canUseTool`
+(o Gateway) normalmente, e isso vale pra toda integração adicionada
+desde então.
 
-Correção: os nomes saíram de `allowedTools`. Agora as duas tools
-"caem" no `canUseTool` normalmente, e `disallowedTools` bloqueia as
-tools nativas do agente (Bash, Write, Edit etc.) que ainda não devem
-existir nessa fase.
+## Se algo não bater
 
-**Ao testar de novo**, o esperado é:
-
-- `me dê um ping...` → roda direto, sem perguntar nada (baixo risco).
-- `finja apagar...` → agora sim deve **parar** e mostrar
-  `⚠️ Ação de ALTO RISCO solicitada` + `Confirmar execução? (s/n)`
-  antes de fazer qualquer coisa. Se isso não aparecer, a correção não
-  pegou — me avisa.
-
-## Se algo não bater com o SDK
-
-Este código foi escrito consultando a documentação atual do Claude
-Agent SDK, mas **não foi executado** (o ambiente onde foi gerado não
-tem acesso à internet). Os pontos com maior chance de precisar de
-ajuste fino se o `pnpm dev` reclamar:
-
-- O formato exato do `input` passado pra `tool()` — se a versão que
-  você instalou usa uma assinatura ligeiramente diferente da atual.
-- O nome exato de alguns campos em `PermissionResult` /
-  `CanUseTool` — a API do SDK está evoluindo rápido.
-- Se `@anthropic-ai/claude-agent-sdk@^0.3.200` não existir mais como
-  faixa de versão, ajuste pra versão mais recente disponível.
-
-Qualquer erro do `pnpm install` ou `pnpm dev`, me cola aqui a
-mensagem que a gente ajusta junto.
-
-## Próximo passo depois desta fase
-
-Com o pipeline validado (ping passa direto, pretend_delete pede
-confirmação, e o SQLite registra as duas decisões), o próximo passo é
-a Fase 1: trocar as tools de teste pela primeira tool real —
-Apple Calendar via EventKit — mantendo exatamente essa mesma
-estrutura de Gateway + audit log.
+Todo o código deste repositório foi validado rodando de verdade —
+`pnpm dev` de ponta a ponta, contra os apps/APIs reais, não só revisão
+estática — em cada fase, com os bugs reais encontrados (e como foram
+corrigidos) documentados em `docs/architecture.md`. Se mesmo assim
+algo não bater com a versão do SDK/API que você tem instalada, a
+mensagem de erro geralmente já vem com contexto suficiente (os bridges
+JXA propagam `stderr` nas exceções, os clients HTTP tratam os erros
+mais comuns de cada API com mensagens específicas) — mas cola aqui que
+a gente ajusta junto.
