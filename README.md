@@ -7,30 +7,89 @@ do sistema e serviços externos. Cada fase é validada rodando de
 verdade (não só revisão de código) — o histórico completo de decisões
 e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md).
 
-**O que já funciona:**
+## Fase 0 — fundação
 
-- **Fase 0** — fundação: Gateway de permissões (`@sarah/permissions`),
-  audit log em SQLite (`@sarah/audit`), tools de teste (`ping`/
-  `pretend_delete`) como sanity check.
-- **Fase 1** — integrações reais: Apple Calendar (`list_events`/
-  `create_event`, via EventKit/JXA), Notion Calendar (calendário
-  principal do usuário), Apple Reminders (`list_reminders`/
-  `create_reminder`, via EventKit/JXA), Gmail leitura
-  (`list_recent_emails`, OAuth próprio).
-- **Fase 2** — memória: `@sarah/memory` guarda fatos/preferências
-  persistentes em SQLite+FTS5 (`remember`/`recall`/`forget`), com
-  preferências influenciando automaticamente o comportamento de
-  outras tools (injeção via `systemPrompt`, sem depender do agente
-  decidir buscar). Memória de SESSÃO (conversa continuando entre
-  turnos dentro da mesma execução) via `resume` do Agent SDK.
-- **Fase 3** — Apple Notes (`list_notes`/`create_note`, scripting via
-  `Application("Notes")`) e o ciclo completo de e-mail: `get_message`
-  (corpo completo sob demanda), `create_draft`/`reply_draft`
-  (rascunhos, baixo risco) e `send_draft` (**envia um rascunho já
-  existente** — alto risco, decisão deliberada, com confirmação
-  mostrando o conteúdo legível antes de perguntar). Nenhuma tool
-  "compõe e envia" no mesmo passo — o fluxo sempre passa por rascunho
-  primeiro.
+- Gateway de permissões baseado em risco (`@sarah/permissions`):
+  toda tool passa por `canUseTool` antes de rodar, nunca por
+  `allowedTools` (pré-aprovar ali pula o Gateway — bug real
+  encontrado e corrigido nesta fase).
+- Log de auditoria em SQLite (`@sarah/audit`) — toda decisão do
+  Gateway (auto-allow/confirmado/negado) fica gravada em
+  `data/sarah.db`.
+- Tools de teste (`ping`/`pretend_delete`) como sanity check dos dois
+  caminhos (baixo risco roda direto; alto risco pede confirmação
+  `(s/n)`).
+- **Decisão mais importante:** risco não vive dentro da tool — uma
+  política central classifica `low`/`high` e decide se confirma;
+  tool desconhecida é alto risco por padrão (fail-safe).
+- **Validado:** `pnpm dev` real — `ping` roda sem confirmação,
+  `pretend_delete` pede e respeita "s"/"n", as duas decisões batem
+  com o audit log.
+
+## Fase 1 — integrações reais
+
+- Apple Calendar (`list_events`/`create_event`) e Apple Reminders
+  (`list_reminders`/`create_reminder`), os dois via EventKit
+  acessado por JXA (`osascript -l JavaScript`) — sem compilar nada,
+  Xcode Command Line Tools quebrado nesta máquina inviabilizou a
+  ponte Swift originalmente planejada.
+- Notion Calendar como calendário principal/padrão, com
+  desambiguação Notion-vs-Apple-Calendar feita inteiramente pela
+  `description` de cada tool (não existe roteador central no Agent
+  SDK pra isso).
+- Gmail leitura (`list_recent_emails`, OAuth próprio via loopback +
+  PKCE, refresh token no Keychain do macOS).
+- **Decisão mais importante:** bloquear o conector nativo
+  `claude_ai_Gmail` do ambiente via `disallowedTools` — ele não passa
+  pelo Gateway nem pelo audit log deste projeto, quebrando a garantia
+  central de "toda ação passa pela política de risco". A SARAH usa
+  exclusivamente sua própria tool.
+- **Validado:** todas as quatro integrações testadas contra os
+  apps/API reais (evento criado aparece no Calendário, lembrete
+  criado aparece no EventKit, página criada no banco Notion real,
+  e-mails resumidos batem com a caixa de entrada real) — não só
+  revisão de código.
+
+## Fase 2 — memória
+
+- `@sarah/memory`: fatos e preferências persistentes em SQLite+FTS5
+  (`remember`/`recall`/`forget`), sobrevivendo a reiniciar o
+  processo — diferente de memória de SESSÃO (conversa continuando
+  entre turnos dentro da mesma execução do `pnpm dev`), corrigida na
+  mesma fase via `resume` do Agent SDK.
+- Preferências (`category: "preferencia"`) influenciam outras tools
+  automaticamente, sem depender do agente lembrar de chamar
+  `recall` — injetadas via `systemPrompt` antes de cada `query()`.
+- **Decisão mais importante:** injeção determinística em vez de
+  confiar no agente decidir buscar memória sozinho — uma preferência
+  guardada precisa valer sempre, não só quando o modelo "lembra" de
+  perguntar.
+- **Validado:** em DUAS execuções separadas do `pnpm dev` (não a
+  mesma sessão) — preferência de lista padrão guardada na execução 1
+  foi aplicada sozinha, sem repetir, num lembrete criado na execução
+  2, conferido direto no EventKit.
+
+## Fase 3 — Apple Notes e ações de e-mail
+
+- Apple Notes (`list_notes`/`create_note`) via scripting
+  `Application("Notes")` — mecanismo diferente de EventKit (Notes.app
+  não tem framework público equivalente), com bugs novos e próprios
+  (título e primeira linha do body são o mesmo campo, body é HTML de
+  verdade).
+- Ciclo completo de e-mail: `get_message` (corpo completo sob
+  demanda), `create_draft`/`reply_draft` (rascunhos, baixo risco) e
+  `send_draft` (**envia um rascunho já existente**, alto risco).
+- **Decisão mais importante:** `send_draft` foi uma decisão
+  deliberada de habilitar envio de verdade — não existe (nem vai
+  existir) uma tool que componha e envie no mesmo passo, o fluxo
+  sempre passa por rascunho primeiro; a confirmação busca e mostra o
+  conteúdo do rascunho de forma legível (Para/Assunto/corpo) em vez
+  do JSON cru.
+- **Validado:** rascunho de resposta criado a partir de um e-mail
+  real (thread/assunto corretos, conferido pela API do Gmail) e um
+  envio real de teste (pra mim mesmo) confirmado com `labelIds:
+  ["SENT", "INBOX"]` direto na API — chegou na caixa de entrada de
+  verdade.
 
 **O que este código NÃO faz ainda (de propósito):** app de menu bar
 nativo (ainda é terminal), agente de código/sandbox, GitHub, deploy de
