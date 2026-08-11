@@ -1,0 +1,20 @@
+{
+  "name": "sarah",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "pnpm --filter cli dev",
+    "gmail:auth": "tsx scripts/gmail-auth.ts"
+  },
+  "dependencies": {
+    "@sarah/gmail": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  }
+}
