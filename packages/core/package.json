@@ -11,6 +11,8 @@
     "@sarah/fixtures": "workspace:*",
     "@sarah/apple-calendar": "workspace:*",
     "@sarah/notion": "workspace:*",
-    "@sarah/apple-reminders": "workspace:*"
+    "@sarah/apple-reminders": "workspace:*",
+    "@sarah/gmail": "workspace:*",
+    "@sarah/memory": "workspace:*"
   }
 }

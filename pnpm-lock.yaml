@@ -77,6 +77,12 @@ importers:
       '@sarah/fixtures':
         specifier: workspace:*
         version: link:../fixtures
+      '@sarah/gmail':
+        specifier: workspace:*
+        version: link:../gmail
+      '@sarah/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@sarah/notion':
         specifier: workspace:*
         version: link:../notion
@@ -101,6 +107,22 @@ importers:
       zod:
         specifier: ^3.23.0
         version: 3.25.76
+
+  packages/memory:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.3.200
+        version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      better-sqlite3:
+        specifier: ^11.3.0
+        version: 11.10.0
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.11
+        version: 7.6.13
 
   packages/notion:
     dependencies:

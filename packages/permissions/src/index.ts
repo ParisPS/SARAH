@@ -42,6 +42,13 @@ const LOW_RISK_TOOLS = new Set<string>([
   // possível (não envia, não apaga, não marca como lido). Ainda mais
   // claramente baixo risco que list_events/list_reminders.
   "mcp__sarah-gmail__list_recent_emails",
+  // Memória persistente: remember é aditivo (nunca sobrescreve/apaga),
+  // recall é leitura pura — mesma justificativa de sempre. forget
+  // (exclusão permanente) fica DE FORA de propósito: cai no fail-safe
+  // de alto risco, exige confirmação, igual qualquer ação destrutiva
+  // deste projeto.
+  "mcp__sarah-memory__remember",
+  "mcp__sarah-memory__recall",
 ]);
 
 export function classifyRisk(toolName: string): RiskLevel {

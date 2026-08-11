@@ -58,6 +58,7 @@ jarvis/                  # nome da pasta no disco — não renomeada (só o
     notion/                   # Fase 1: Notion Calendar (API REST oficial, sem SDK)
     apple-reminders/          # Fase 1: Apple Reminders via EventKit (ponte JXA)
     gmail/                     # Fase 1: Gmail (leitura, OAuth próprio) — fecha a Fase 1
+    memory/                     # Fase 2: memória persistente (fatos + preferências, SQLite+FTS5)
   scripts/
     gmail-auth.ts              # autorização OAuth interativa (roda uma vez): `pnpm gmail:auth`
 ```
@@ -378,6 +379,145 @@ enviar/apagar), e só metadados por e-mail (`From`/`Subject`/`Date` +
 de minimizar o dado puxado, suficiente pra resumir e mais barato/
 privado que buscar o corpo inteiro de cada e-mail.
 
+## Decisões e bugs encontrados na Fase 2 (Memória)
+
+**Correção de registro, antes de mais nada:** numa resposta anterior
+desta mesma conversa, afirmei que memória de sessão (conversa
+continuando entre turnos dentro da MESMA execução do `pnpm dev`) já
+tinha sido resolvida numa correção pós-Fase-1. **Isso era falso** — não
+existia essa correção em lugar nenhum (nem no código, nem documentada
+aqui antes desta seção). Conferindo `packages/core/src/index.ts` de
+verdade, cada prompt do REPL chamava `query()` do zero, sem `resume`
+nem `sessionId` — ou seja, cada linha digitada era uma conversa
+completamente nova pro Agent SDK, mesmo dentro do mesmo processo. Essa
+seção documenta a correção de verdade, feita agora.
+
+### Duas memórias diferentes, dois mecanismos diferentes
+
+Este projeto agora tem DOIS conceitos de "memória" que não devem ser
+confundidos:
+
+1. **Memória de SESSÃO** (`resume` do Agent SDK) — o histórico da
+   conversa atual continua entre prompts, mas só enquanto o processo
+   `pnpm dev` está rodando. Reinicia o processo, perde tudo. Serve pra
+   "esse mesmo evento", "e sobre isso que eu falei antes" etc.
+2. **Memória PERSISTENTE** (`@sarah/memory`, esta fase) — fatos e
+   preferências guardados em SQLite, sobrevivem a reiniciar o processo
+   indefinidamente. Serve pra "sempre faça X" e "o que você sabe sobre
+   mim?".
+
+### Memória de sessão: captura de `session_id` + `resume`
+
+Confirmado na definição de tipos do SDK instalado (`sdk.d.ts`, não por
+memória de versões antigas, como pedido): a mensagem `system`/`init` —
+a primeira mensagem de todo stream de `query()` — carrega
+`session_id: string`; a opção `resume?: string` em `query({ options:
+{...} })` carrega o histórico de uma sessão anterior. Implementado em
+`packages/core/src/index.ts`: uma variável `sessionId` no escopo do
+loop principal é atualizada a cada mensagem `system`/`init` recebida
+(não só na primeira — auto-corretivo caso uma chamada futura force
+fork de sessão) e passada como `resume` em toda chamada seguinte a
+`query()`. Reseta sozinho ao reiniciar o processo (`sessionId` volta a
+ser `undefined`) — isso é o esperado, não um bug: memória de sessão
+não é memória persistente.
+
+### Memória persistente: schema
+
+`packages/memory`, SQLite próprio em `data/sarah-memory.db` (mesmo
+padrão de um arquivo por responsabilidade que `@sarah/audit` já usa).
+Tabela única `memories` (`id`, `content`, `category`, `created_at`) —
+`category` é um enum Zod fechado (`"fato" | "preferencia"`), não texto
+livre, mesmo motivo do `categoria` do Notion Calendar: o core precisa
+filtrar `category === "preferencia"` de forma confiável (ver injeção
+determinística abaixo); um valor livre digitado errado quebraria esse
+filtro silenciosamente.
+
+Busca por palavra-chave via `memories_fts`, uma virtual table **FTS5**
+no modo *external content* (`content='memories', content_rowid='id'`)
+— o texto de verdade mora só em `memories.content`, a FTS5 guarda só o
+índice invertido, sincronizado por TRIGGER em INSERT **e DELETE**
+(não só INSERT): testado isoladamente antes de escrever qualquer
+código — sem o trigger de DELETE, `memory.forget` apagaria a linha de
+`memories` mas deixaria um registro fantasma pesquisável na FTS pra
+sempre. Confirmado nos dois sentidos: com o trigger, uma busca por um
+termo de uma memória apagada devolve zero resultados E a FTS não fica
+com nenhuma linha órfã (`SELECT rowid FROM memories_fts` bate exato
+com o que sobrou em `memories`).
+
+`memory.recall(query?)`: a query em linguagem natural do usuário é
+convertida numa expressão FTS5 segura — cada token vira uma frase
+entre aspas, unidos por `OR` (`toFtsQuery()` em
+`packages/memory/src/db.ts`). Evita dois problemas reais testados
+isoladamente: sintaxe FTS5 quebrando com palavras reservadas do
+próprio FTS5 (`AND`/`OR`/`NOT`) ou pontuação, e — mais importante —
+`query` é **opcional**: sem ela (ou só pontuação), a busca cai pra
+"as memórias mais recentes" em vez de tentar casar palavra-chave.
+Necessário porque testado isoladamente que um MATCH FTS5 com os tokens
+de uma pergunta genérica tipo "o que você sabe sobre mim?" não bate
+com nada guardado — não existe termo específico pra buscar nesse caso,
+então a busca por palavra-chave sozinha não cobriria esse uso.
+
+### Tools e risco
+
+- `memory.remember(content, category)` — baixo risco (aditivo, nunca
+  sobrescreve/apaga).
+- `memory.recall(query?, limit?)` — baixo risco (leitura pura).
+- `memory.forget(id)` — **alto risco** (exclusão permanente), de
+  propósito fora de `LOW_RISK_TOOLS`: cai no fail-safe, pede
+  confirmação, igual qualquer ação destrutiva deste projeto.
+
+Diferente dos outros pacotes de tool (que exportam um `xServer`
+pronto), `packages/memory` exporta uma FACTORY
+(`createMemoryServer(dbPath)`), porque `packages/core/src/index.ts`
+precisa de acesso direto ao `MemoryStore` por trás das tools — não só
+pra chamar via MCP, mas pra ler `category === "preferencia"` ele mesmo
+antes de cada `query()` (ver abaixo). Um único `MemoryStore` (uma
+única conexão SQLite) é compartilhado entre as tools e essa leitura
+direta do core.
+
+### Injeção determinística de preferências — o porquê de não depender só de `memory.recall`
+
+Uma preferência guardada precisa influenciar o comportamento de
+OUTRAS tools automaticamente (ex.: lista padrão de lembretes),
+sozinha, sem o usuário repetir. Depender do agente **decidir** chamar
+`memory.recall` antes de cada ação não seria confiável — é uma decisão
+que ele teria que acertar de novo em toda conversa nova, pra toda tool
+que pudesse ter uma preferência relevante, sem nenhuma garantia.
+
+Solução: `packages/core/src/index.ts` chama
+`memoryStore.listByCategory("preferencia")` **sem cache** (busca
+fresca antes de cada `query()` — mesma lição já registrada aqui sobre
+o bug de cache do schema do Notion) e injeta o resultado via
+`systemPrompt`. Formato exato confirmado na definição de tipos do SDK
+instalado antes de escrever qualquer código (não assumido de exemplo
+antigo):
+
+```ts
+systemPrompt: {
+  type: "preset",
+  preset: "claude_code",
+  append: "Preferências conhecidas do usuário — aplique automaticamente...\n- <preferência 1>\n- ...",
+}
+```
+
+Isso preserva o system prompt padrão do Claude Code (`preset:
+"claude_code"`) e só ACRESCENTA as preferências — chega pro modelo
+garantido em toda chamada, não como uma tool que ele pode esquecer de
+chamar. `memory.recall` continua existindo como tool, pra busca sob
+demanda (ex.: "o que você sabe sobre mim?", que também cobre fatos,
+não só preferências).
+
+### Achado lateral: `AskUserQuestion` do próprio agente também é alto risco
+
+Durante a validação, o agente às vezes usa sua PRÓPRIA tool
+`AskUserQuestion` (nativa do Agent SDK) pra pedir esclarecimento antes
+de um `forget` ambíguo (ex.: duas memórias de teste idênticas). Como
+`AskUserQuestion` não está em `LOW_RISK_TOOLS`, ela cai no mesmo
+fail-safe de alto risco e também pede confirmação `(s/n)` no terminal
+— efeito colateral correto do design (pior caso é confirmação a mais,
+nunca execução silenciosa), mas vale de saber: uma pergunta de
+esclarecimento do próprio agente também para o fluxo esperando "s/n".
+
 ## Status atual
 
 Fase 0 (fundação) e Fase 1 (Apple Calendar via EventKit) implementadas
@@ -479,6 +619,41 @@ Console (usuário de teste) documentado acima:
   — prova de que era esse conector, não `gmail.list_recent_emails`,
   que tinha sido usado por engano antes desta implementação.
 
+**Memória (Fase 2) validada rodando de verdade, em DUAS execuções
+separadas do `pnpm dev`** (não a mesma sessão — o que importava aqui
+era sobreviver a reiniciar o processo, não conversa continuando):
+
+- **Execução 1**: `lembra que eu sempre quero que lembretes sejam
+  criados na lista Trabalho por padrão` → guardado com `category:
+  "preferencia"`, conferido direto no `data/sarah-memory.db` (não só
+  pelo texto do agente). Processo encerrado.
+- **Execução 2** (processo novo): `cria um lembrete pra revisar o
+  relatório`, sem mencionar lista nenhuma → usou **"Trabalho" sozinho**
+  — conferido direto no EventKit (`list_reminders` na lista Trabalho)
+  que o lembrete "Revisar o relatório" realmente foi criado lá. Prova
+  que a injeção determinística via `systemPrompt` funciona entre
+  processos diferentes, não só dentro do mesmo.
+- `o que você sabe sobre mim?` → recuperou a preferência guardada
+  (via `memory.recall` sem `query`, que lista as mais recentes) e
+  distinguiu corretamente memória de longo prazo (da tool) de contexto
+  do projeto atual (do `CLAUDE.md`).
+- `memory.forget` testado com uma memória de teste: pediu confirmação
+  `(s/n)` — audit log confirma `mcp__sarah-memory__forget`, `risk:
+  high`, `decision: confirmed` — e a memória sumiu tanto de `memories`
+  quanto de `memories_fts` depois (conferido direto no SQLite, sem
+  linha fantasma).
+- **`resume` (memória de sessão) testado na MESMA execução**: `cria um
+  evento chamado "Teste Resume SARAH" amanhã às 11h` (foi pro Notion,
+  padrão) e, numa mensagem SEPARADA no mesmo processo, `adiciona esse
+  mesmo evento no Apple Calendar também, sem eu repetir os detalhes` —
+  funcionou: usou o mesmo título e mesmo horário sem eu repetir nada,
+  criando também no Apple Calendar. Conferido direto no EventKit (não
+  só pelo texto do agente) que o evento apareceu lá com os detalhes
+  certos. Todos os artefatos de teste desta validação (evento no Apple
+  Calendar, página no Notion, lembrete "Revisar o relatório") foram
+  removidos depois — a preferência sobre lembretes ficou guardada de
+  propósito, é o resultado real da feature, não lixo de teste.
+
 ## Renomeação: JARVIS → SARAH
 
 O projeto (e o assistente em si) foi renomeado de JARVIS pra SARAH —
@@ -541,7 +716,10 @@ revalidação foram removidos depois.
    Apple Reminders (**feito**: list_reminders + create_reminder) +
    Gmail (**feito**: list_recent_emails, leitura, OAuth próprio),
    interface terminal. **(Fase 1 completa)**
-2. Memória estruturada + preferências.
+2. Memória estruturada + preferências (**feito**: `@sarah/memory`
+   — remember/recall/forget persistentes + injeção determinística de
+   preferências via `systemPrompt` — e memória de SESSÃO via `resume`
+   do Agent SDK, corrigida nesta mesma fase). **(Fase 2 completa)**
 3. Apple Notes + ações de e-mail (responder/rascunho) com confirmação.
 4. App de menu bar nativo substituindo o terminal; voz opcional.
 5. Agente de código: sandbox Docker por projeto, criação de projetos, git.
@@ -552,9 +730,11 @@ revalidação foram removidos depois.
 
 ## Próximo passo concreto
 
-**Fase 1 está completa**: Apple Calendar, Notion Calendar, Apple
-Reminders e Gmail (leitura) feitos e validados rodando de verdade,
-cada um com sua tool passando pelo mesmo Gateway de risco e audit log
-— inclusive o conector nativo de Gmail do ambiente, que fica bloqueado
-de propósito em vez de ser usado por atalho. Próximo passo é a Fase 2:
-memória estruturada + preferências do usuário.
+**Fase 2 está completa**: memória persistente (fatos + preferências,
+sobrevive a reiniciar o processo) e memória de sessão (`resume`,
+sobrevive entre turnos dentro do mesmo processo) implementadas e
+validadas rodando de verdade, incluindo o caso que motivou a fase —
+uma preferência guardada numa execução do `pnpm dev` mudou o
+comportamento real de `apple_reminders.create_reminder` numa execução
+seguinte, sem precisar repetir nada. Próximo passo é a Fase 3: Apple
+Notes + ações de e-mail (responder/rascunho) com confirmação.
