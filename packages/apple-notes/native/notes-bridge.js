@@ -192,9 +192,33 @@ function handleCreateNote(Notes, account, input) {
   return { ok: true, note: noteToPlainObject(newNote) };
 }
 
+/**
+ * `status`: Notes.app não tem uma API de autorização consultável como
+ * o EventKit (`authorizationStatusForEntityType`) — Apple Events/
+ * Automation não expõe um "só me diga se eu tenho permissão, sem
+ * pedir". A checagem mais mínima e não-destrutiva possível é chamar
+ * `Notes.name()` — só pergunta o próprio nome do app via Apple
+ * Events, não lê nem cria nenhuma nota. Se a Automation não foi
+ * autorizada ainda, isso dispara o MESMO diálogo de permissão que
+ * qualquer uso real dispararia na primeira vez (não é um efeito
+ * colateral A MAIS que este status check está introduzindo) — só não
+ * cria/edita dado nenhum.
+ */
+function handleStatus() {
+  const Notes = Application("Notes");
+  Notes.includeStandardAdditions = false;
+  const name = Notes.name(); // só pra confirmar que a automação responde
+  return { ok: true, name };
+}
+
 function run(_argv) {
   try {
     const input = readStdinJSON();
+
+    if (input.command === "status") {
+      return JSON.stringify(handleStatus());
+    }
+
     const Notes = Application("Notes");
     Notes.includeStandardAdditions = false;
     const account = Notes.defaultAccount();

@@ -1,0 +1,19 @@
+{
+  "name": "menubar",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "dev": "env -u ELECTRON_RUN_AS_NODE electron ."
+  },
+  "dependencies": {
+    "@sarah/core": "workspace:*",
+    "@sarah/permissions": "workspace:*",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "tsx": "^4.19.0"
+  }
+}

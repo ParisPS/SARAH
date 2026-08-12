@@ -180,3 +180,4 @@ export const gmailServer = createSdkMcpServer({
 export { runInteractiveAuthFlow } from "./auth-flow.js";
 export { getDraftPreview } from "./client.js";
 export type { DraftPreview } from "./client.js";
+export { checkGmailStatus } from "./status.js";

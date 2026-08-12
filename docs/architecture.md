@@ -49,6 +49,7 @@ jarvis/                  # nome da pasta no disco — não renomeada (só o
                           # projeto/pacotes/nomes funcionais, ver seção
                           # "Renomeação: JARVIS → SARAH" mais abaixo)
   apps/cli/              # interface MVP (terminal)
+  apps/menubar/          # Fase 4: interface Electron (Tray + janela), roda ao lado do cli
   packages/
     core/                 # orquestrador: chama query() do Agent SDK
     permissions/           # Gateway: classifyRisk() + canUseTool
@@ -1122,6 +1123,440 @@ da refatoração** (mesmo texto, mesmo fluxo — não só "não quebrou"):
   `confirmed`) — mesmo padrão de decisões que já existia antes desta
   refatoração.
 
+## Decisões e bugs encontrados na Fase 4, parte 2 (Tray + janela reais)
+
+**Escopo desta parte:** a janela/Tray de verdade, prevista como
+próximo passo da parte 1. `apps/menubar` — segunda interface da SARAH,
+lado a lado com `apps/cli`, sem substituí-lo.
+
+### Refatoração necessária em `@sarah/core`: sessão em vez de loop de REPL
+
+Antes desta parte, `@sarah/core` expunha só `runSarah()` — uma função
+que TINHA o loop `while (true) { rl.question(...) }` dentro dela, ou
+seja, assumia terminal. Uma janela Electron não pergunta "a próxima
+linha" via `readline`, ela recebe eventos de IPC quando o usuário
+aperta Enter. Extraído o loop pra fora: `@sarah/core` agora exporta só
+`createSarahSession({ confirm })`, que monta o Gateway/audit log/
+memória/tools MCP UMA VEZ e devolve `{ ask(prompt), close() }` —
+`ask()` pode ser chamado quantas vezes forem necessárias, mantendo
+`resume` entre chamadas. `apps/cli` passou a ter seu próprio loop
+`readline` chamando `session.ask()` a cada linha (comportamento
+revalidado como idêntico ao de antes); `apps/menubar` chama
+`session.ask()` a partir de um handler de IPC. Nenhuma lógica de
+Gateway/audit/memória foi duplicada entre os dois apps — só o "como
+recebo o próximo pedido" muda, e isso é inerentemente diferente entre
+uma interface e outra.
+
+**Bug real corrigido no mesmo passo:** até aqui, o audit log e a
+memória usavam caminho RELATIVO (`./data/sarah.db`), resolvido a
+partir do `cwd` do processo — descoberto rodando de verdade que
+`pnpm --filter cli dev` executa com `cwd` em `apps/cli/`, não na raiz
+do monorepo (o `data/` real ficava em `apps/cli/data/`, não
+`<raiz>/data/`). Com uma segunda interface, cada uma rodando de um
+`cwd` diferente, isso quebraria a premissa de "audit log e memória são
+compartilhados entre todas as interfaces". Corrigido resolvendo os
+dois caminhos de forma ABSOLUTA a partir da localização do próprio
+`packages/core/src/index.ts` (mesmo padrão já usado pra achar o
+`.env`), sempre apontando pra `<raiz do repo>/data/`. Validado
+rodando `apps/cli` e o daemon do `apps/menubar` em processos
+separados, na mesma sessão de testes, e conferindo que as decisões de
+AMBOS aparecem juntas, em ordem, no mesmo `data/sarah.db`.
+
+### Parede real #1: `ELECTRON_RUN_AS_NODE=1` (já prevista na parte 1, resolvida aqui)
+
+Resolvida no `package.json` do `apps/menubar`: `"dev": "env -u
+ELECTRON_RUN_AS_NODE electron ."` — o processo que LANÇA o Electron
+precisa limpar essa variável antes de invocar o binário; não dá pra
+corrigir de dentro do próprio app, porque o bootstrap nativo do
+Electron já checa essa variável antes de qualquer linha de JavaScript
+nosso rodar.
+
+### TypeScript dentro do processo principal do Electron: `tsx` programático
+
+Igual o resto do projeto, todo o código de verdade deste app é
+TypeScript, sem etapa de build — mas o `"main"` do `package.json` do
+Electron só aceita um arquivo `.js`/`.mjs` de verdade, não um
+comando (`tsx arquivo.ts` não serve como valor de `"main"`).
+`main.js` (bootstrap de ~5 linhas, JavaScript puro — a ÚNICA parte
+deste app que precisa ser JS, não TS) registra o loader do `tsx`
+antes de importar o resto.
+
+**Bug real encontrado testando isso isolado, antes de escrever o app
+inteiro** (mesma metodologia de sempre): a forma "genérica" de
+registrar um loader do Node (`node:module`'s `register("tsx/esm",
+...)`) usa o mecanismo ANTIGO (`--loader`, depreciado desde o Node
+20.6) — o próprio `tsx` detecta isso e recusa rodar: `"tsx must be
+loaded with --import instead of --loader"`. A API certa é a que o
+pacote `tsx` expõe especificamente pra esse uso
+(`import { register } from "tsx/esm/api"; register();`) — registra do
+jeito novo por baixo dos panos. Com a API certa, TypeScript (incluindo
+`import` de `@sarah/core` e todo pacote workspace por trás dele)
+carrega normalmente dentro do processo principal do Electron.
+
+### Parede real #2: `better-sqlite3` tem ABI diferente dentro do Electron
+
+A mais séria desta parte, encontrada só ao tentar rodar o app
+completo (não o esqueleto mínimo, que não importava `@sarah/core`):
+`require("better-sqlite3")` falhava dentro do processo do Electron
+com `NODE_MODULE_VERSION 127 vs 148 requerida`. Diagnóstico, sem
+assumir nada: `better-sqlite3` (dependência de `@sarah/audit` e
+`@sarah/memory`) **não usa N-API** (que garantiria ABI estável entre
+versões de Node/Electron) — seu `"install": "prebuild-install ||
+node-gyp rebuild --release"` baixa um binário pré-compilado
+ESPECÍFICO pra cada combinação de runtime+ABI; o que já tínhamos
+instalado foi baixado pro Node do sistema (ABI 127, Node 22.13). O
+Node EMBUTIDO no Electron 43.4.0 usa outra ABI (148,
+`process.versions.modules` dentro do processo do Electron). Conferido
+direto nos releases do pacote no GitHub (não assumido): a versão
+instalada (11.10.0) só publica prebuilts de Electron até ABI 135; a
+versão mais nova do pacote no npm (13.0.3) não tinha NENHUM prebuilt
+de Electron publicado no momento desta checagem. Ou seja, sem um
+prebuilt pra ABI 148, a única saída seria `node-gyp rebuild` de
+verdade — que bateria na MESMA parede do Xcode Command Line Tools
+quebrado que já tinha derrubado o `swiftc` na Fase 1.
+
+Parado e perguntado ao usuário antes de tentar qualquer contorno
+(conforme instrução explícita) — quatro opções levantadas: isolar o
+SQLite num processo separado, baixar uma versão mais antiga do
+Electron com ABI compatível, trocar de biblioteca SQLite pra uma
+N-API de verdade, ou resolver o Xcode CLT e compilar localmente.
+**Escolhida a primeira: isolar `@sarah/core` (e portanto
+`better-sqlite3`) num processo FILHO separado**, rodado com o Node
+NORMAL do sistema via `tsx` — o mesmo mecanismo que já roda
+`apps/cli` — em vez do Node embutido do Electron. Resolve não só este
+caso, mas qualquer módulo nativo futuro que a mesma restrição de ABI
+afetasse (mais genérico que as outras três opções, que resolviam só
+o SQLite ou dependiam do mesmo toolchain quebrado).
+
+**Arquitetura resultante — dois arquivos novos:**
+
+- `apps/menubar/src/daemon.ts` — processo FILHO. Cria a
+  `SarahSession` de verdade (`createSarahSession` de `@sarah/core`) e
+  fala um protocolo simples de JSON Lines (um objeto JSON por linha)
+  via stdin/stdout com o processo pai. Recebe `{type:"ask", id,
+  prompt}`, devolve `{type:"ask-result", id, ok, text|error}`. Quando
+  o Gateway (dentro da sessão) precisa confirmar uma ação de alto
+  risco, este processo NÃO sabe mostrar dialog nenhum — só manda
+  `{type:"confirm-request", id, toolName, input, preview}` pro pai e
+  ESPERA a resposta `{type:"confirm-response", id, approved}` antes
+  de deixar o Gateway continuar (uma `Promise` pendente por `id`, num
+  `Map`).
+- `apps/menubar/src/sarah-daemon.ts` — lado PAI, dentro do processo do
+  Electron. Sobe o processo filho (`spawn` apontando pro `tsx` local
+  do app, não pro Node embutido do Electron), fala o mesmo protocolo,
+  e repassa `confirm-request` pro `ConfirmFn` de verdade (o dialog
+  nativo, ver abaixo) — o filho não sabe nada de Electron.
+
+Robustez: as duas pontas ignoram silenciosamente qualquer linha que
+não seja JSON válido (em vez de derrubar o protocolo), pro caso raro
+de alguma dependência escrever algo inesperado em stdout/stderr.
+
+**Validado em isolamento, ANTES de testar o app completo** (mesma
+metodologia de sempre — testar a peça arriscada isolada primeiro):
+um script standalone falou diretamente com `daemon.ts` via stdin/
+stdout, sem Electron nenhum no meio:
+
+- Um pedido de baixo risco (`ping`) → `ready` seguido de
+  `ask-result` com `ok:true` e o texto de resposta certo, sem nenhum
+  `confirm-request` (esperado, `ping` é baixo risco). Conferido no
+  `data/sarah.db` compartilhado: `mcp__sarah-fixtures__ping`, `low`,
+  `auto-allow`.
+- Um pedido de alto risco (`pretend_delete`) → `confirm-request` com
+  `toolName`/`input` corretos chegou ANTES do `ask-result`; simulado
+  o usuário clicando "Cancelar" (`confirm-response` com
+  `approved:false`) → `ask-result` confirmando a negação. Conferido
+  no audit log: `mcp__sarah-fixtures__pretend_delete`, `high`,
+  `denied`.
+
+### Tray, janela e confirmação — o que foi construído
+
+- **Ícone de Tray gerado em código** (um círculo preto simples,
+  18x18, com alpha, via `nativeImage.createFromBitmap` — sem arquivo
+  de imagem nenhum) com `setTemplateImage(true)`, que faz o macOS
+  ajustar a cor automaticamente conforme o tema (claro/escuro) da
+  barra de menu. Polimento visual (um ícone desenhado de verdade) foi
+  deixado de propósito fora do escopo desta parte — o objetivo aqui
+  era validar a FUNÇÃO.
+- **Bug de Electron encontrado testando o esqueleto mínimo** (antes de
+  construir o app inteiro): um `Tray`/`BrowserWindow` guardado só numa
+  variável LOCAL de uma função/callback pode ser coletado pelo
+  garbage collector do V8 assim que a função termina — corrigido
+  guardando `tray`/`win`/`daemon` em `let` no escopo do MÓDULO, não
+  dentro de `app.whenReady().then(...)`.
+- **Clicar no ícone** alterna mostrar/esconder uma janela pequena
+  (380x480), posicionada logo abaixo do ícone (`tray.getBounds()` +
+  `win.setPosition(...)`, calculado a cada abertura). Fechar a janela
+  pelo botão vermelho só ESCONDE (comportamento padrão de app de menu
+  bar — o processo continua rodando); sair de verdade é só pelo menu
+  de contexto (botão direito no ícone → "Sair") ou Cmd+Q.
+  `app.dock?.hide()` tira o ícone do Dock — a barra de menu já é a UI.
+- **`app.focus({ steal: true })` adicionado** antes de mostrar a
+  janela: `app.dock?.hide()` muda a política de ativação do app pra
+  "accessory" no macOS, que não ganha foco automático do mesmo jeito
+  que um app normal — sem isso, a janela podia abrir atrás de outra
+  já em foco.
+- **Confirmação de alto risco**: `confirmViaDialog` (`ConfirmFn` de
+  @sarah/permissions) usa `dialog.showMessageBox` — MESMA informação
+  que o terminal já mostra (nome da tool + preview, ou o JSON cru do
+  input quando não há `formatConfirmationInput` pra aquela tool),
+  botões "Cancelar" (padrão/`cancelId`, pra Esc nunca confirmar
+  sozinho) e "Confirmar".
+- **Renderer sem framework** (HTML/CSS/JS puros, `contextIsolation:
+  true` + `preload.cjs` com `contextBridge` — o renderer não tem
+  acesso direto a Node/Electron): campo de texto + lista rolável de
+  mensagens (Você/SARAH), usando `textContent` (nunca `innerHTML`)
+  pro texto do usuário e a resposta do modelo, evitando qualquer
+  interpretação como HTML.
+
+### Validação visual — confirmada pelo usuário
+
+Mesma lacuna de sempre nesta fase: sem permissão de Gravação de Tela
+nesta máquina, a única forma de confirmar que Tray/janela/dialog
+aparecem corretamente é o usuário testando de verdade — o roteiro
+passo a passo (achar o ícone, clicar, pedido de baixo risco, pedido de
+alto risco com dialog nativo, sair) foi seguido e confirmado
+funcionando. Evidência independente, não só a palavra do usuário:
+`data/sarah.db` (compartilhado com `apps/cli`) ganhou uma sequência
+extensa de chamadas reais durante o teste — muito além do roteiro
+mínimo pedido, incluindo `mcp__sarah-notion__create_event`,
+`mcp__sarah-apple-reminders__create_reminder`,
+`mcp__sarah-apple-notes__create_note` (duas vezes),
+`mcp__sarah-gmail__create_draft` e `mcp__sarah-gmail__send_draft`
+(`risk: high`, `decision: confirmed` — ou seja, o dialog nativo de
+alto risco apareceu e foi confirmado de verdade pela janela do
+Electron, não só o cenário do roteiro). **Fase 4, parte 2 completa.**
+
+## Decisões e bugs encontrados na Fase 4, parte 3 (polimento visual + features)
+
+**Escopo delegado ao critério do assistente**, com uma direção
+específica pro item 1 (visualização holográfica azul); os outros três
+itens (selo de tool, histórico, bolhas de conversa) ficaram livres de
+implementação. Não muda nada do Gateway/audit log/memória/`apps/cli`
+— só a camada visual/UX de `apps/menubar` por cima do que já existia.
+
+### Item 1 — visualização holográfica central
+
+**Proposta feita antes de implementar** (Three.js confirmado, não
+ajustado): WebGL via Three.js pra um wireframe icosaédrico + partículas
+em anel, geometria deliberadamente leve (icosaedro `detail=1`, ~42
+vértices; 400 partículas) — o efeito "holograma" vem de
+wireframe fino + glow aditivo, não de contagem de polígonos alta, então
+o risco de performance percebida era baixo desde o design.
+
+**Validado com medição real de FPS, não só assumido**: sem permissão
+de Gravação de Tela, a única forma de confirmar performance foi
+instrumentar o próprio `hologram.js` (`renderer/hologram.js`) pra
+reportar a FPS média dos primeiros ~3s via `console.log`, encaminhado
+do renderer pro terminal do processo principal
+(`webContents.on("console-message", ...)`, em `main-process.ts` — sem
+isso não haveria como ler o console do DevTools de forma nenhuma
+nesta máquina). Três medições em execuções separadas: **92.8, 55.2 e
+60.2 fps** — bem acima do limiar de "perceptível como travado"
+(~30fps), confirmando que a visualização não introduz problema de
+performance nesta máquina, mesmo rodando junto com o resto do app
+(daemon filho, Gateway, IPC).
+
+**Dois avisos reais encontrados e corrigidos durante essa validação**
+(não relacionados a performance, mas capturados pelo mesmo
+encaminhamento de console):
+1. `THREE.Clock` está depreciado nesta versão do pacote (0.185.1) —
+   trocado por `THREE.Timer` (API confirmada rodando um script Node
+   isolado antes de trocar no código: `getDelta()`/`getElapsed()`
+   equivalentes, mas precisa de `.update()` explícito por frame).
+2. Aviso de segurança do Electron sobre CSP ausente — corrigido
+   adicionando uma tag `<meta http-equiv="Content-Security-Policy">`
+   restritiva (`default-src 'self'`) em `index.html` e `history.html`;
+   nada neste app carrega recurso externo, então `'self'` (mais
+   `'unsafe-inline'` só pro `<style>` embutido) já cobre tudo.
+
+**Estado exposto (`renderer/hologram.js`)**: `setState("idle" |
+"thinking")` — chamado em `renderer.js` no lugar exato onde antes
+existia o texto "SARAH está pensando..." (removido, a animação é o
+único indicador agora, como pedido) — e `setAudioLevel(nivel: number)`,
+o gancho pra Fase de voz: já soma um "boost" na animação (pulso/
+partículas) mesmo sem nenhuma chamada real ainda (fica em 0). Quando a
+voz for implementada, basta chamar `setAudioLevel(volumeDoTTS)`
+periodicamente — nenhuma mudança estrutural na visualização vai ser
+necessária. Transição idle↔thinking suavizada por interpolação
+(`energy` no código), não troca abrupta.
+
+**Sem bundler**: Three.js importado direto do build ESM instalado
+(`import * as THREE from "../node_modules/three/build/three.module.js"`)
+— confirmado que o pacote expõe esse caminho antes de escrever
+qualquer código (`npm view three exports`), o Chromium do Electron
+resolve caminho relativo normalmente pra um módulo ES, sem precisar de
+Webpack/Vite/esbuild.
+
+### Item 2 — selo de tool + risco por resposta
+
+Resolve o gap descrito pelo usuário: antes, saber qual tool rodou
+numa resposta exigia consultar `data/sarah.db` via SQL — a interface
+não mostrava isso sozinha. `ask()` (`@sarah/core`) passou a emitir
+`SarahEvent` (`{type:"text"}` ou `{type:"tool", toolName, risk}`) em
+vez de só texto — o mesmo stream de mensagens do Agent SDK já inclui
+blocos `tool_use` (`{id, input, name, type:"tool_use"}`, confirmado no
+tipo `BetaToolUseBlock` do SDK da Anthropic antes de assumir o
+formato), então não precisou esperar o `onDecision` do Gateway pra
+saber qual tool rodou. `apps/cli` recebe os mesmos eventos e ignora os
+do tipo `"tool"` de propósito — saída do terminal continua idêntica à
+de antes. O daemon deduplica tools repetidas no mesmo turno (preserva
+a ordem da primeira aparição) antes de mandar pro processo principal.
+Selo mostra `<emoji + nome amigável> · baixo/alto risco` (ex.: "🗓️
+Notion · baixo risco"), com um mapeamento fixo por prefixo de server
+em `renderer.js` — cai no nome cru se um server novo aparecer sem
+entrada no mapa (nunca quebra).
+
+### Item 3 — painel de histórico
+
+Escolhida janela SEPARADA (não painel lateral): a janela principal já
+é estreita (380px), uma segunda área ali competiria com o holograma/
+conversa. Aberta pelo menu de contexto do ícone (botão direito →
+"Histórico..."), busca os dados via um novo tipo de mensagem no
+protocolo do daemon (`{type:"history", id, limit}` →
+`{type:"history-result", id, entries}`), reusando
+`AuditLog.recent()` (já existia desde a Fase 0, nunca duplicado) —
+`SarahSession` ganhou um método `history(limit?)` que só chama isso.
+`apps/menubar` define um tipo `HistoryEntry` PRÓPRIO em
+`sarah-daemon.ts` em vez de importar `AuditRow` de `@sarah/audit`
+— de propósito: o app não precisa de `@sarah/audit` (nem do
+`better-sqlite3` por trás) como dependência direta, só do formato dos
+dados que já chegam prontos via JSON do daemon.
+
+### Item 4 — bolhas de conversa
+
+Evitado o "template genérico de chat" de propósito (pedido explícito
+do usuário) — paleta azul/marinho escuro consistente com o holograma
+(`#060a14` de fundo, acentos `#3b82f6`/`#7dd3fc`), cantos NÃO
+totalmente arredondados (assimétricos: um canto "reto" do lado de
+quem fala, como um indicador de origem, mais parecido com painel de
+HUD que bolha de chat comum), mensagens da SARAH com borda esquerda
+azul + glow sutil (`box-shadow`) remetendo à mesma cor do wireframe do
+holograma. Selo de tool (item 2) vive dentro da própria bolha, como um
+rodapé discreto separado por uma linha fina.
+
+### Validação — pendente de confirmação visual do usuário
+
+Mesma lacuna de sempre (sem Gravação de Tela): validado
+programaticamente tudo que dá pra validar sem olhar a tela —
+protocolo de tools/histórico testado isolado contra o daemon real
+(sem Electron no meio), FPS do holograma medido de verdade via
+console encaminhado, nenhum erro nos dois renderers (janela principal
+e histórico) nos logs encaminhados. A confirmação visual final (a
+esfera anima e reage a "pensando", os selos aparecem, o histórico
+lista as ações reais, as bolhas têm a identidade visual descrita) fica
+para o usuário confirmar — resultado registrado na próxima atualização
+deste arquivo.
+
+## Decisões e bugs encontrados na Fase 4, parte 3.5 (dashboard com dado real)
+
+**Regra absoluta do pedido, seguida à risca**: todo painel precisa de
+uma fonte de dado REAL já existente no projeto — nenhum indicador
+decorativo/inventado. Proposta feita antes de implementar (ver
+abaixo) sinalizando explicitamente o que ficaria de fora por falta de
+dado real, mesmo sem o usuário ter pedido a exclusão.
+
+### Referência visual
+
+O usuário enviou uma imagem de referência: uma esfera geodésica feita
+de NÓS (pontos) conectados por linhas finas, com um ponto de luz
+branco brilhante no centro, sobre fundo azul-marinho bem escuro com
+vinheta radial. Isso é diferente do wireframe sólido genérico da parte
+3 — o holograma foi refeito (`renderer/hologram.js`) pra seguir essa
+linguagem: `IcosahedronGeometry(1.3, 2)` (~162 vértices) alimenta DOIS
+objetos a partir da MESMA geometria — `THREE.Points` com uma textura
+de ponto circular suave (gradiente radial gerado em canvas,
+reaproveitada também pro núcleo) pros nós, e `THREE.EdgesGeometry` +
+`LineSegments` pras arestas (evita as diagonais internas dos
+triângulos que `WireframeGeometry` incluiria, ficando mais parecido
+com uma malha geodésica limpa). O núcleo é um `Sprite` aditivo com
+`depthTest: false` (sempre visível por cima da malha), pulsando mais
+forte no estado "pensando" — o parâmetro mais natural pra reagir a
+`setAudioLevel` no futuro (um "flash" a cada pico de volume do TTS).
+
+### Proposta de painéis (feita antes de implementar) — o que tem dado real e o que não tem
+
+- **Status das integrações**: viável pras cinco, mas com uma
+  distinção importante que o pedido original não fazia — "configurada"
+  (credenciais/permissão presentes) é diferente de "verificada
+  funcionando agora" (exigiria uma chamada de API de verdade a cada
+  abertura do painel, com custo de rede/latência). Implementado como
+  "configurada", nunca "testada neste instante": Gmail e Notion via
+  presença de env vars (+ Keychain no caso do Gmail); Apple Calendar e
+  Apple Reminders via `EKEventStore.authorizationStatusForEntityType`
+  (método de CLASSE do EventKit, real, sem pedir acesso nem ter efeito
+  colateral — diferente de `requestAccessToEntityTypeCompletion`, que
+  dispara o diálogo do macOS); Apple Notes não tem uma API de
+  autorização consultável (Automation/Apple Events não expõe "só me
+  diga, sem pedir") — o sinal real mais próximo é chamar
+  `Notes.name()` (só pergunta o nome do app via Apple Events, não lê
+  nem cria nada), aceito como proxy real, sinalizado como tal.
+- **Proporção de risco** e **atividade por categoria**: viáveis sem
+  ressalva, agregações diretas do audit log (`@sarah/audit` ganhou
+  `riskCounts()`/`countByServer()`).
+- **Atividade recente**: viável, mas só como contagem por HORA nas
+  últimas 24h (`@sarah/audit.hourlyBuckets()`) — não tinha como
+  inventar granularidade menor (minuto a minuto) sem dado real
+  suficiente pra isso ser útil.
+- **Módulos ativos**: sinalizado como REDUNDANTE com "status das
+  integrações", não implementado como painel separado — a lista de
+  servers MCP registrados é ESTÁTICA (todos os sete sempre registrados
+  em `mcpServers`, independente de uso real), então "ativo" nesse
+  sentido não seria um dado real diferente do que "status das
+  integrações" já mostra. Os ícones de cada integração (item pedido
+  aqui) foram incorporados DENTRO do painel de status em vez de um
+  painel à parte.
+- **Excluídos, confirmando os exemplos do próprio pedido**: voz/
+  reconhecimento (sem voz implementada ainda), servidor/latência de
+  rede (arquitetura é 100% local, não existe "servidor" pra medir) e
+  qualquer selo de segurança tipo "encryption AES-256" (o projeto usa
+  HTTPS padrão pras APIs externas e Keychain do macOS pro refresh
+  token do Gmail — nenhuma alegação de criptografia específica além
+  disso seria honesta).
+
+### Validação — protocolo testado isolado, sem Electron no meio
+
+Mesma metodologia de sempre: um script standalone falou direto com
+`daemon.ts` (`{type:"dashboard", id}` → `{type:"dashboard-result", id,
+data}`) antes de tocar em qualquer HTML/CSS. Resultado real desta
+máquina, nesta sessão: as cinco integrações `configured: true`
+(ambiente de desenvolvimento já configurado por completo);
+`riskCounts` batendo exatamente com o total de chamadas já feitas
+(`low: 15, high: 5`, soma 20); `categoryCounts` somando os mesmos 20,
+maior atividade em `sarah-fixtures`/`sarah-gmail` (5 cada, reflete os
+testes desta e de fases anteriores); `hourlyActivity` com 24 baldes,
+22 zerados e 2 com atividade real concentrada nas duas últimas horas —
+exatamente o padrão esperado de uso real numa sessão de
+desenvolvimento, não dado inventado.
+
+### Achado real de ambiente durante a validação de FPS: uma leitura de 7fps era ruído, não regressão
+
+Uma medição isolada deu 7.0fps (bem abaixo do threshold de
+"perceptível", ~30fps) — investigado antes de aceitar como problema
+real. Instrumentado o holograma pra reportar FPS em DUAS janelas
+(0-3s e 3-8s) e reconferido: leituras seguintes deram 53.7/58.8fps e
+58.9fps, consistentes com as medições da parte 3. Causa raiz da
+leitura ruim: processos Electron ÓRFÃOS de tentativas de teste
+anteriores (incluindo uma tentativa de checar `app.getGPUFeatureStatus()`
+que travou) ainda vivos e competindo por CPU/GPU exatamente durante a
+janela de medição — confirmado pelo `ps aux` mostrando múltiplos
+processos com PIDs antigos ainda de pé, limpos manualmente logo antes
+da remedição. Não é uma regressão do código novo (geometria mais densa,
+janela maior) — é uma armadilha da própria metodologia de teste
+automatizado neste ambiente (processos zumbis de rodadas anteriores),
+registrada aqui pra não ser reinvestigada à toa no futuro.
+
+### Layout: janela cresceu, e o cálculo de posição precisou mudar junto
+
+380x480 (só chat) → 760x760 (holograma maior + grade 2x2 de painéis +
+chat). O cálculo antigo de posição (centralizar embaixo do ícone da
+Tray) jogaria boa parte de uma janela desse tamanho pra fora da tela
+em qualquer ícone perto da borda direita (comum, a barra de menu do
+macOS enche da direita pra esquerda). Corrigido: alinha a borda
+direita da janela com a borda direita do ícone (convenção comum de
+painel de menu bar) e depois GRAMPEIA dentro de `display.workArea`
+(`screen.getDisplayNearestPoint`) nos dois eixos — nunca nasce
+parcialmente fora da tela, em qualquer monitor.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -1141,9 +1576,14 @@ da refatoração** (mesmo texto, mesmo fluxo — não só "não quebrou"):
    real de um rascunho já existente, com confirmação melhorada
    mostrando o conteúdo legível). **(Fase 3 completa)**
 4. App de menu bar nativo substituindo o terminal; voz opcional.
-   **(Fase 4, parte 1 feita: framework decidido — Electron — e o
-   Gateway refatorado pra não depender mais de terminal; falta
-   construir a janela/Tray de verdade e, à parte, a voz.)**
+   **(Fase 4 completa até a parte 3.5: framework decidido — Electron
+   —, Gateway desacoplado de terminal, `@sarah/core` isolado num
+   daemon Node separado do Electron (ABI do `better-sqlite3`), Tray +
+   janela reais com confirmação via dialog nativo, dashboard com
+   holograma (referência visual seguida) + 4 painéis de dado REAL
+   (status de integrações, proporção de risco, atividade por
+   categoria/hora) — tudo validado rodando de verdade. Falta só a voz,
+   à parte.)**
 5. Agente de código: sandbox Docker por projeto, criação de projetos, git.
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
@@ -1156,19 +1596,37 @@ da refatoração** (mesmo texto, mesmo fluxo — não só "não quebrou"):
 incluindo `send_draft`, validados rodando de verdade — detalhes na
 seção acima).
 
-**Fase 4, parte 1 está completa**: framework de interface decidido
-(Electron, por não depender de compilação nativa local — este é o
-motivo real, ligado ao `swiftc`/Xcode CLT quebrado desde a Fase 1) e
-validado com um teste isolado (Tray + janela mínimos, processos
-main/GPU/renderer/network subindo sem parede de compilação); o
-Gateway (`@sarah/permissions`) foi refatorado pra receber `confirm`
-injetado em vez de ter `readline` preso dentro — `apps/cli` fornece a
-implementação de terminal, com comportamento revalidado como
-IDÊNTICO ao de antes (mesmo texto de confirmação, mesmas decisões no
-audit log). Nenhuma janela/Tray de verdade foi construída ainda — é
-exatamente esse o próximo passo: montar `apps/menubar` (ou nome
-equivalente) usando Electron, com sua própria implementação de
-`ConfirmFn` (dialog nativo em vez de `readline`), reaproveitando
-`@sarah/core` e todos os pacotes de tool sem tocar neles. Voz fica
-pra depois, à parte, tratada como uma etapa independente da
-interface gráfica.
+**Fase 4 está completa até a parte 3.5** — resumo:
+
+- **Parte 1**: framework decidido (Electron, por não depender de
+  compilação nativa local) + Gateway (`@sarah/permissions`)
+  refatorado pra receber `confirm` injetado em vez de `readline`
+  preso dentro.
+- **Parte 2**: `apps/menubar` construído — Tray + janela reais,
+  `@sarah/core` extraído de `runSarah()` (loop de terminal) pra
+  `createSarahSession()` (reusável por qualquer interface), isolado
+  num processo daemon Node separado (contorna a ABI incompatível do
+  `better-sqlite3` dentro do Electron), audit log/memória
+  compartilhados de verdade entre `apps/cli` e `apps/menubar` via
+  caminho absoluto. Validado pelo usuário rodando de verdade,
+  incluindo um `send_draft` (alto risco) confirmado pelo dialog
+  nativo.
+- **Parte 3**: polimento visual + features, critério do assistente —
+  visualização holográfica (Three.js, com gancho `setAudioLevel` já
+  pronto pra Fase de voz), selo de tool+risco por resposta, painel de
+  histórico em janela separada, identidade visual própria pras
+  bolhas de conversa.
+- **Parte 3.5**: dashboard mais denso, seguindo referência visual
+  enviada pelo usuário (esfera geodésica de nós+linhas+núcleo
+  brilhante) — 4 painéis, TODOS com dado real (status de integrações,
+  proporção de risco, atividade por categoria, atividade por hora nas
+  últimas 24h); "módulos ativos" e indicadores de voz/rede/segurança
+  ficaram de fora por não terem fonte de dado real disponível agora
+  (ver seção acima pro porquê de cada um). Janela cresceu de 380x480
+  pra 760x760, posicionamento recalculado pra nunca sair da tela.
+  Performance revalidada com medição real de FPS em duas janelas de
+  tempo (~54-59fps) — uma leitura anômala de 7fps investigada e
+  atribuída a processos órfãos de testes anteriores, não a regressão.
+
+**Falta só a voz** — tratada desde o início como uma etapa
+independente da interface gráfica, ainda não iniciada.

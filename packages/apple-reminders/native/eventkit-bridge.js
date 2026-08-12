@@ -246,9 +246,26 @@ function handleCreateReminder(store, input) {
   return { ok: true, reminder: reminderToPlainObject(reminder) };
 }
 
+/**
+ * `status`: consulta SÓ a autorização já concedida (ou não), SEM
+ * pedir acesso — mesmo raciocínio de `packages/apple-calendar/native/
+ * eventkit-bridge.js` (ver comentário lá), só que pra
+ * `EKEntityTypeReminder`. Existe pro painel de "status das
+ * integrações" do dashboard (Fase 4 parte 3.5).
+ */
+function handleStatus() {
+  const status = $.EKEventStore.authorizationStatusForEntityType($.EKEntityTypeReminder);
+  return { ok: true, status: Number(status) };
+}
+
 function run(_argv) {
   try {
     const input = readStdinJSON();
+
+    if (input.command === "status") {
+      return JSON.stringify(handleStatus());
+    }
+
     const store = $.EKEventStore.alloc.init;
 
     const accessGranted = requestRemindersAccess(store);

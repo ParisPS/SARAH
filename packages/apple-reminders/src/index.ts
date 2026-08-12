@@ -72,3 +72,5 @@ export const appleRemindersServer = createSdkMcpServer({
   name: "sarah-apple-reminders",
   tools: [listReminders, createReminder],
 });
+
+export { checkRemindersStatus } from "./status.js";

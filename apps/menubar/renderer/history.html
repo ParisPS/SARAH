@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <title>SARAH — Histórico</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #060a14;
+        color: #dce6f5;
+        font-family:
+          -apple-system,
+          BlinkMacSystemFont,
+          "Helvetica Neue",
+          sans-serif;
+      }
+      body {
+        padding: 10px 12px;
+        overflow-y: auto;
+      }
+      h1 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: #5b7bab;
+        margin: 0 0 10px;
+        font-weight: 600;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th {
+        text-align: left;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #5b7bab;
+        padding: 4px 6px;
+        border-bottom: 1px solid #142138;
+      }
+      td {
+        padding: 6px 6px;
+        border-bottom: 1px solid #0f1a2e;
+        vertical-align: top;
+      }
+      td.tool {
+        color: #cdd8ec;
+        word-break: break-word;
+      }
+      td.time {
+        color: #6b87ae;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      .badge {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 10.5px;
+      }
+      .risk-low {
+        background: #0f2a1c;
+        color: #7fe0a8;
+      }
+      .risk-high {
+        background: #2a1c0f;
+        color: #f5b971;
+      }
+      .decision-auto-allow {
+        background: #0f2a1c;
+        color: #7fe0a8;
+      }
+      .decision-confirmed {
+        background: #10203f;
+        color: #7dabe0;
+      }
+      .decision-denied {
+        background: #2a1220;
+        color: #f3b4b4;
+      }
+      #empty {
+        opacity: 0.5;
+        font-size: 12px;
+        padding: 20px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Últimas ações (Gateway)</h1>
+    <div id="content"></div>
+    <script type="module" src="history.js"></script>
+  </body>
+</html>

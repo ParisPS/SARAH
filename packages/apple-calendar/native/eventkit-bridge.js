@@ -181,9 +181,29 @@ function handleCreateEvent(store, input) {
  * — o osascript imprime o valor retornado no stdout. Por isso `run()`
  * abaixo usa `return`, nunca `console.log`, pro resultado final.
  */
+/**
+ * `status`: consulta SÓ a autorização já concedida (ou não), SEM
+ * pedir acesso — `authorizationStatusForEntityType` é um método de
+ * CLASSE (não precisa de instância de `EKEventStore`) e não dispara o
+ * diálogo de permissão do macOS nem bloqueia esperando resposta,
+ * diferente de `requestCalendarAccess` abaixo. Existe pro painel de
+ * "status das integrações" do dashboard (Fase 4 parte 3.5) conseguir
+ * mostrar um dado real sem ter o efeito colateral de pedir acesso só
+ * de abrir o painel.
+ */
+function handleStatus() {
+  const status = $.EKEventStore.authorizationStatusForEntityType($.EKEntityTypeEvent);
+  return { ok: true, status: Number(status) };
+}
+
 function run(_argv) {
   try {
     const input = readStdinJSON();
+
+    if (input.command === "status") {
+      return JSON.stringify(handleStatus());
+    }
+
     const store = $.EKEventStore.alloc.init;
 
     const accessGranted = requestCalendarAccess(store);

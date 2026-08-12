@@ -1,4 +1,4 @@
-# SARAH — Fases 0-3 completas
+# SARAH — Fases 0-4 (parte 3) completas
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -91,17 +91,64 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   ["SENT", "INBOX"]` direto na API — chegou na caixa de entrada de
   verdade.
 
-**O que este código NÃO faz ainda (de propósito):** app de menu bar
-nativo (ainda é terminal), agente de código/sandbox, GitHub, deploy de
-sites, memória semântica — ver o roadmap completo em
-`docs/architecture.md`.
+## Fase 4 (partes 1-3.5) — interface gráfica (Electron), ao lado do terminal
+
+- `@sarah/core` refatorado: de um loop de terminal (`runSarah`) pra
+  `createSarahSession()`, reusável por qualquer interface —
+  `apps/cli` e `apps/menubar` chamam exatamente a mesma função
+  (Gateway/audit log/memória/tools MCP), só o "como recebo o próximo
+  pedido" muda entre um `readline` e eventos de IPC.
+  `@sarah/permissions` não tem mais `readline` preso dentro: recebe
+  um `confirm` injetado (dialog nativo no Electron, `(s/n)` no
+  terminal).
+- `apps/menubar`: ícone na barra de menu do macOS (Tray) que abre um
+  dashboard (760x760) com uma visualização holográfica central
+  (Three.js — esfera geodésica de nós+linhas+núcleo brilhante,
+  seguindo uma referência visual enviada pelo usuário) que substitui
+  qualquer indicador de texto tipo "digitando..." — anima mais
+  enquanto aguarda resposta, com um gancho (`setAudioLevel`) já pronto
+  pra reagir a volume de voz numa fase futura. Abaixo do holograma,
+  quatro painéis com dado REAL (nunca decorativo): status de cada
+  integração (config/permissão presente ou não), proporção de risco
+  baixo/alto, atividade por categoria e atividade por hora nas últimas
+  24h — todos lidos do mesmo audit log/config que o resto do projeto
+  já usa. Cada resposta do chat (que continua funcionando, abaixo dos
+  painéis) mostra um selo discreto de qual tool rodou e o risco. Um
+  painel de histórico à parte (janela separada, aberta pelo menu do
+  ícone) lista as últimas ações do Gateway sem precisar abrir
+  terminal/SQLite.
+- **Decisão mais importante:** `@sarah/core` roda num processo FILHO
+  separado (Node normal do sistema, via `tsx`), não dentro do
+  processo do Electron — `better-sqlite3` (usado pelo audit log e
+  pela memória) é um módulo nativo com ABI travada a uma versão exata
+  do Node, e o Node embutido no Electron usa outra ABI, sem prebuilt
+  disponível. O processo do Electron fala com o daemon por JSON Lines
+  via stdio; resolve esse caso e qualquer módulo nativo futuro com a
+  mesma restrição.
+- **Validado:** terminal revalidado como idêntico depois da
+  refatoração do Gateway; protocolo do daemon (tools, confirmação de
+  alto risco, histórico, dashboard) testado isolado, sem Electron no
+  meio — inclusive conferindo que os números do dashboard batiam
+  exatamente com o audit log real; performance da visualização medida
+  de verdade (~54-93fps em várias rodadas, encaminhando o console do
+  renderer pro terminal — sem permissão de Gravação de Tela nesta
+  máquina, essa foi a única forma de confirmar sem depender só de
+  olhar a tela); uso real extenso pelo usuário (Notion, Reminders,
+  Notes, Gmail, incluindo um `send_draft` confirmado pelo dialog
+  nativo) registrado no mesmo `data/sarah.db` compartilhado com o
+  terminal.
+
+**O que este código NÃO faz ainda (de propósito):** voz, agente de
+código/sandbox, GitHub, deploy de sites, memória semântica — ver o
+roadmap completo em `docs/architecture.md`.
 
 ## Setup
 
 ```bash
 pnpm install
 cp .env.example .env
-pnpm dev
+pnpm dev              # terminal (apps/cli)
+pnpm --filter menubar dev   # janela/Tray (apps/menubar) — pode rodar junto com o terminal
 ```
 
 `.env` precisa, no mínimo, do `NOTION_API_KEY`/
@@ -143,6 +190,19 @@ e-mail de fulano e cria um rascunho de resposta` (chama `get_message`
 <id>` (chama `send_draft`, **alto risco** — deve mostrar Para/Assunto/
 corpo de forma legível e pedir confirmação antes de enviar de
 verdade).
+
+**Fase 4**: rode `pnpm --filter menubar dev` — procure um ícone
+circular pequeno na barra de menu do macOS (tooltip "SARAH"). Clique
+pra abrir o dashboard: holograma no topo, quatro painéis (status das
+integrações, proporção de risco, atividade por categoria, atividade
+por hora) e a conversa embaixo. `me dê um ping com a mensagem oi` roda
+direto (o holograma anima mais forte enquanto espera, sem texto
+"pensando..."; os painéis de risco/categoria/atividade se atualizam
+sozinhos depois da resposta); `finja apagar o arquivo teste.txt` abre
+um dialog nativo do macOS (não dentro da janela) pedindo confirmação.
+Cada resposta mostra um selo discreto de qual tool rodou. Botão
+direito no ícone → "Histórico..." abre uma janela com as últimas ações
+do Gateway.
 
 A primeira chamada de cada integração do sistema (Calendar, Reminders,
 Notes) deve mostrar um diálogo do macOS pedindo permissão pro processo

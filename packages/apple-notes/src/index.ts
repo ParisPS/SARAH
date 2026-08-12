@@ -57,3 +57,5 @@ export const appleNotesServer = createSdkMcpServer({
   name: "sarah-apple-notes",
   tools: [listNotes, createNote],
 });
+
+export { checkNotesStatus } from "./status.js";

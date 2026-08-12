@@ -1,79 +1,100 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import * as readline from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
-import { createGateway, type ConfirmFn } from "@sarah/permissions";
-import { AuditLog } from "@sarah/audit";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createGateway, classifyRisk, type ConfirmFn, type RiskLevel } from "@sarah/permissions";
+import { AuditLog, type AuditRow } from "@sarah/audit";
 import { fixturesServer } from "@sarah/fixtures";
-import { appleCalendarServer } from "@sarah/apple-calendar";
-import { notionServer } from "@sarah/notion";
-import { appleRemindersServer } from "@sarah/apple-reminders";
-import { gmailServer, getDraftPreview } from "@sarah/gmail";
+import { appleCalendarServer, checkCalendarStatus } from "@sarah/apple-calendar";
+import { notionServer, checkNotionStatus } from "@sarah/notion";
+import { appleRemindersServer, checkRemindersStatus } from "@sarah/apple-reminders";
+import { gmailServer, getDraftPreview, checkGmailStatus } from "@sarah/gmail";
 import { createMemoryServer } from "@sarah/memory";
-import { appleNotesServer } from "@sarah/apple-notes";
+import { appleNotesServer, checkNotesStatus } from "@sarah/apple-notes";
 
 /**
- * Loop principal do REPL de terminal que fala com o Claude Agent SDK,
- * passando pelo Gateway de permissões e registrando tudo no audit
- * log. Estrutura criada na Fase 0; a partir da Fase 1 as tools de
- * fixtures continuam registradas (servem de sanity check) e passam a
- * dividir espaço com integrações reais: @sarah/apple-calendar,
- * @sarah/notion, @sarah/apple-reminders e @sarah/gmail. As duas
- * primeiras têm uma tool `create_event` — a desambiguação entre elas
- * (Notion é o calendário principal/padrão, Apple só quando pedido
- * explicitamente, nunca as duas juntas) vive inteiramente nas
- * `description` de cada tool, não aqui — é o único sinal que o agente
- * tem pra escolher entre tools do MCP. Reminders é um app diferente
- * (lembrete, não compromisso/evento), então não compete com as duas —
- * mas a distinção também é feita só via description, mesmo mecanismo.
- * Gmail (leitura) não compete com nenhuma delas, mas tem seu próprio
- * concorrente: o conector nativo `claude_ai_Gmail` do ambiente, que é
- * bloqueado abaixo via `disallowedTools` — a SARAH usa exclusivamente
- * sua própria tool, que passa pelo Gateway e pelo audit log.
- *
- * CORREÇÃO DE REGISTRO: uma resposta anterior nesta mesma conversa
- * afirmou que memória de sessão (conversa continuando entre turnos
- * dentro da mesma execução do `pnpm dev`) já estava resolvida. Não
- * estava — cada chamada a `query()` era uma conversa nova pro SDK,
- * sem `resume`. Corrigido nesta fase (ver `sessionId` abaixo): captura
- * o `session_id` da mensagem `system`/`init` da PRIMEIRA chamada e
- * reusa via `options.resume` nas chamadas seguintes, dentro da mesma
- * execução do processo — reseta ao encerrar (esperado: memória de
- * sessão não é memória persistente, essa é a responsabilidade de
- * @sarah/memory, ver abaixo).
+ * Núcleo do agente: monta o Gateway de permissões, o audit log, a
+ * memória persistente e o registro de tools MCP, e expõe UM prompt de
+ * cada vez via `SarahSession.ask()`. Estrutura criada na Fase 0; a
+ * partir da Fase 1 as tools de fixtures continuam registradas (servem
+ * de sanity check) e passam a dividir espaço com integrações reais:
+ * @sarah/apple-calendar, @sarah/notion, @sarah/apple-reminders e
+ * @sarah/gmail. As duas primeiras têm uma tool `create_event` — a
+ * desambiguação entre elas (Notion é o calendário principal/padrão,
+ * Apple só quando pedido explicitamente, nunca as duas juntas) vive
+ * inteiramente nas `description` de cada tool, não aqui — é o único
+ * sinal que o agente tem pra escolher entre tools do MCP. Reminders é
+ * um app diferente (lembrete, não compromisso/evento), então não
+ * compete com as duas — mas a distinção também é feita só via
+ * description, mesmo mecanismo. Gmail (leitura) não compete com
+ * nenhuma delas, mas tem seu próprio concorrente: o conector nativo
+ * `claude_ai_Gmail` do ambiente, que é bloqueado abaixo via
+ * `disallowedTools` — a SARAH usa exclusivamente sua própria tool, que
+ * passa pelo Gateway e pelo audit log.
  *
  * `send_draft` (Gmail): única tool de ALTO risco deste projeto que
  * ganhou uma confirmação melhorada — ver `formatConfirmationInput`
  * abaixo, injetado no Gateway pra buscar e mostrar o conteúdo do
- * rascunho (Para/Assunto/corpo) antes de perguntar "(s/n)", em vez do
- * `draftId` cru. Só o core conhece @sarah/gmail o suficiente pra fazer
- * isso — @sarah/permissions continua sem depender de nenhum pacote de
- * tool específico, só recebe a função pronta.
+ * rascunho (Para/Assunto/corpo) antes de perguntar "(s/n)"/mostrar um
+ * dialog, em vez do `draftId` cru. Só o core conhece @sarah/gmail o
+ * suficiente pra fazer isso — @sarah/permissions continua sem
+ * depender de nenhum pacote de tool específico, só recebe a função
+ * pronta.
  *
- * FASE 4: `confirm` (o "faz a pergunta e espera resposta" de verdade,
- * ex.: o `readline.question("... (s/n) ")` de sempre) SAIU de dentro
- * de @sarah/permissions e passou a ser um parâmetro obrigatório de
- * `runSarah()`, repassado direto pro Gateway (ver `ConfirmFn` em
- * @sarah/permissions). Motivo: @sarah/permissions não pode mais
- * assumir que existe um terminal do outro lado — uma futura interface
- * gráfica (Electron) vai confirmar ações de alto risco com um
- * dialog/janela, não com stdin/stdout. O core continua sem saber QUAL
- * interface está rodando; só encaminha o que `apps/*` fornecer.
- * `apps/cli/src/main.ts` fornece a implementação readline, com
- * comportamento IDÊNTICO ao de antes desta refatoração (mesmo texto,
- * mesmo "(s/n)").
+ * FASE 4, PARTE 1: `confirm` (o "faz a pergunta e espera resposta" de
+ * verdade — `readline.question("... (s/n) ")` no terminal, um dialog
+ * nativo no Electron) SAIU de dentro de @sarah/permissions e passou a
+ * ser um parâmetro obrigatório de `createSarahSession()`, repassado
+ * direto pro Gateway (ver `ConfirmFn` em @sarah/permissions).
+ *
+ * FASE 4, PARTE 2: este arquivo deixou de ser um loop de REPL de
+ * terminal (`while(true) { rl.question(...) }`) — essa era a única
+ * parte daqui que assumia "existe stdin/stdout do outro lado", o que
+ * não faz sentido pra uma janela Electron esperando eventos de IPC.
+ * A lógica de "como recebo o próximo pedido do usuário e como mostro
+ * a resposta" agora pertence inteiramente a cada app (`apps/cli`
+ * continua com seu loop `readline`; `apps/menubar` usa um handler de
+ * IPC por mensagem). O que sobra aqui — Gateway, audit log, memória,
+ * registro das tools MCP, `resume` de sessão — é usado IDENTICAMENTE
+ * pelos dois, através de `createSarahSession()`: uma função que monta
+ * tudo isso uma vez e devolve um objeto com `ask(prompt)` (chamável
+ * quantas vezes forem necessárias, uma por turno) e `close()`.
+ *
+ * Memória de SESSÃO (`resume` do Agent SDK): o histórico da conversa
+ * continua entre chamadas de `ask()` na MESMA `SarahSession` (mesmo
+ * processo, mesma janela/execução aberta) — `sessionId` é capturado
+ * da mensagem `system`/`init` da primeira chamada e reusado via
+ * `options.resume` nas seguintes. Reseta ao encerrar a sessão (nova
+ * `createSarahSession()` = conversa nova) — isso é o esperado, não é
+ * memória persistente (essa é @sarah/memory, ver abaixo).
  *
  * Memória PERSISTENTE (sobrevive a reiniciar o processo, diferente do
  * `resume` acima): @sarah/memory guarda fatos/preferências em SQLite
- * próprio (`data/sarah-memory.db`). Preferências (`category ===
- * "preferencia"`) precisam influenciar o comportamento de OUTRAS
- * tools automaticamente (ex.: lista padrão de lembretes) — depender
- * do agente decidir chamar `memory.recall` antes de cada ação não é
- * confiável (é uma decisão que ele teria que acertar de novo em toda
- * conversa nova). Por isso `memoryStore.listByCategory("preferencia")`
- * é lido aqui, SEM CACHE, antes de cada `query()`, e injetado via
- * `systemPrompt` — chega pro modelo garantido, não como uma tool que
- * ele pode esquecer de chamar. `memory.recall` continua existindo como
- * tool, pra buscas sob demanda (ex.: "o que você sabe sobre mim?").
+ * próprio. Preferências (`category === "preferencia"`) precisam
+ * influenciar o comportamento de OUTRAS tools automaticamente (ex.:
+ * lista padrão de lembretes) — depender do agente decidir chamar
+ * `memory.recall` antes de cada ação não é confiável (é uma decisão
+ * que ele teria que acertar de novo em toda conversa nova). Por isso
+ * `memoryStore.listByCategory("preferencia")` é lido aqui, SEM CACHE,
+ * antes de cada `ask()`, e injetado via `systemPrompt` — chega pro
+ * modelo garantido, não como uma tool que ele pode esquecer de
+ * chamar. `memory.recall` continua existindo como tool, pra buscas
+ * sob demanda (ex.: "o que você sabe sobre mim?").
+ *
+ * FASE 4, PARTE 2 — bug real corrigido: até aqui, o audit log e a
+ * memória usavam caminho RELATIVO (`./data/sarah.db`), resolvido a
+ * partir do `cwd` do processo em execução. Isso "funcionava" enquanto
+ * só existia `apps/cli` (sempre rodado a partir da raiz do monorepo,
+ * então o `cwd` batia com o esperado) — mas descoberto rodando de
+ * verdade que `pnpm --filter cli dev` na prática executa com `cwd` em
+ * `apps/cli/`, não na raiz (`data/` acabou sendo criado ali, não em
+ * `./data` da raiz). Com uma SEGUNDA interface (`apps/menubar`, com
+ * seu próprio `cwd`), esse acoplamento ao `cwd` quebraria a premissa
+ * de "audit log e memória são compartilhados entre todas as
+ * interfaces" — cada app veria um histórico/memória diferente.
+ * Corrigido resolvendo os dois caminhos de forma ABSOLUTA, a partir
+ * da localização deste próprio arquivo-fonte (mesmo padrão já usado
+ * em `apps/cli/src/main.ts` pra achar o `.env`), sempre apontando pra
+ * `<raiz do repo>/data/`, não importa de onde o processo foi lançado.
  *
  * IMPORTANTE: as tools de teste NÃO entram em `allowedTools`. Nesse
  * SDK, um nome "solto" em `allowedTools` pré-aprova a tool inteira —
@@ -139,103 +160,198 @@ async function formatConfirmationInput(toolName: string, toolInput: unknown): Pr
   );
 }
 
-export interface RunSarahOptions {
-  /** Ver `ConfirmFn` em @sarah/permissions — quem chama runSarah() decide a interface. */
+// Ver "bug real corrigido" no comentário do topo — caminho absoluto a
+// partir deste arquivo-fonte, não do `cwd` do processo que importou
+// este pacote. `packages/core/src/index.ts` -> sobe 3 níveis -> raiz.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const AUDIT_DB_PATH = join(REPO_ROOT, "data", "sarah.db");
+const MEMORY_DB_PATH = join(REPO_ROOT, "data", "sarah-memory.db");
+
+export interface CreateSarahSessionOptions {
+  /** Ver `ConfirmFn` em @sarah/permissions — quem chama decide a interface (terminal, dialog...). */
   confirm: ConfirmFn;
 }
 
-export async function runSarah(options: RunSarahOptions): Promise<void> {
-  const audit = new AuditLog("./data/sarah.db");
+/**
+ * Um pedaço do que `ask()` transmite: texto de resposta, ou o aviso
+ * de que uma tool rodou (nome qualificado + risco, na ordem em que o
+ * modelo chamou). Existe desde a Fase 4 parte 3 — antes, `ask()` só
+ * devolvia texto; `apps/menubar` precisa saber QUAL tool rodou pra
+ * mostrar o selo discreto embaixo da resposta ("🗓️ Notion · baixo
+ * risco"), em vez de só o texto corrido. `apps/cli` recebe os mesmos
+ * eventos e simplesmente ignora os do tipo `"tool"` — o terminal
+ * continua mostrando só o texto, comportamento idêntico ao de antes.
+ */
+export type SarahEvent = { type: "text"; text: string } | { type: "tool"; toolName: string; risk: RiskLevel };
+
+/**
+ * Status REAL de uma integração, pro painel "status das integrações"
+ * do dashboard (Fase 4 parte 3.5) — nunca um indicador decorativo.
+ * `id` bate com o prefixo do server MCP (mesmo valor que aparece em
+ * `countByServer()`/`tool_name`), pra o renderer conseguir cruzar as
+ * duas fontes se quiser (ex.: destacar uma integração configurada mas
+ * nunca usada).
+ */
+export interface IntegrationStatus {
+  id: string;
+  label: string;
+  configured: boolean;
+  detail: string;
+}
+
+export interface DashboardData {
+  integrations: IntegrationStatus[];
+  riskCounts: { low: number; high: number };
+  categoryCounts: Array<{ server: string; count: number }>;
+  hourlyActivity: Array<{ hourStart: string; count: number }>;
+}
+
+export interface SarahSession {
+  /**
+   * Envia um prompt e devolve os eventos da resposta conforme chegam
+   * (um `AsyncGenerator` de `SarahEvent`) — texto (pra mostrar
+   * incrementalmente) e avisos de tool usada (pra quem quiser
+   * exibir). Mantém `resume` entre chamadas nesta mesma sessão
+   * automaticamente.
+   */
+  ask(prompt: string): AsyncGenerator<SarahEvent, void, unknown>;
+  /**
+   * Últimas `limit` decisões do Gateway (mesma fonte que
+   * `data/sarah.db`) — pro painel de histórico do `apps/menubar`, sem
+   * precisar abrir um terminal/SQLite à parte. Reusa
+   * `AuditLog.recent()`, já existente desde a Fase 0.
+   */
+  history(limit?: number): AuditRow[];
+  /**
+   * Dados REAIS pro dashboard de `apps/menubar` (Fase 4 parte 3.5):
+   * status de cada integração (config presente ou não — nunca uma
+   * chamada de API de verdade, ver cada `check*Status()` por
+   * integração), e três agregações do audit log (`@sarah/audit`).
+   * Nenhum indicador aqui é inventado/decorativo — painel sem dado
+   * real disponível simplesmente não existe.
+   */
+  dashboard(): Promise<DashboardData>;
+  /** Fecha o audit log e a memória (SQLite) — chamar ao encerrar o app/janela. */
+  close(): void;
+}
+
+/**
+ * Fábrica da sessão da SARAH: monta Gateway, audit log, memória
+ * persistente e o registro de tools MCP UMA VEZ, e devolve um objeto
+ * reutilizável pra fazer quantos pedidos forem necessários. Cada app
+ * (`apps/cli`, `apps/menubar`) cria a sua própria `SarahSession` — o
+ * `confirm` injetado é o que diferencia uma interface da outra.
+ */
+export function createSarahSession(options: CreateSarahSessionOptions): SarahSession {
+  const audit = new AuditLog(AUDIT_DB_PATH);
   const canUseTool = createGateway({
     onDecision: (entry) => audit.record(entry),
     formatConfirmationInput,
     confirm: options.confirm,
   });
-  const { server: memoryServer, store: memoryStore } = createMemoryServer("./data/sarah-memory.db");
-
-  const rl = readline.createInterface({ input, output });
-  console.log("SARAH (Fase 1) — digite algo, ou 'sair' pra encerrar.");
-  console.log(
-    "Experimente: 'me dê um ping com a mensagem oi', 'finja apagar o arquivo teste.txt', " +
-      "'liste meus eventos de hoje', 'marca um compromisso amanhã às 15h' (vai pro Notion, " +
-      "o calendário principal), 'cria um evento no Apple Calendar amanhã às 15h', " +
-      "'cria um lembrete pra ligar pro dentista', 'resuma meus e-mails de hoje', " +
-      "'lembra que...' (guarda uma preferência ou fato), 'o que você sabe sobre mim?', " +
-      "'lista minhas notas', 'cria uma nota com...' ou 'envia o rascunho <id>' (pede confirmação)\n"
-  );
+  const { server: memoryServer, store: memoryStore } = createMemoryServer(MEMORY_DB_PATH);
 
   // Session ID da conversa atual, capturado da mensagem system/init da
   // primeira chamada a query() — reusado via `resume` nas chamadas
-  // seguintes DENTRO desta execução do processo, pra manter contexto
+  // seguintes DENTRO desta mesma `SarahSession`, pra manter contexto
   // entre prompts (ex.: "esse mesmo evento" numa mensagem separada).
-  // Reseta ao reiniciar o processo, de propósito: isso é memória de
-  // sessão, não memória persistente (essa é @sarah/memory).
+  // Reseta ao criar uma sessão nova — isso é o esperado, não um bug:
+  // memória de sessão não é memória persistente.
   let sessionId: string | undefined;
 
-  try {
-    while (true) {
-      let prompt: string;
-      try {
-        prompt = await rl.question("> ");
-      } catch (err) {
-        // O stdin fechou (ex.: EOF por pipe, ou Ctrl+D) enquanto o
-        // loop ainda esperava a próxima pergunta — readline/promises
-        // rejeita `question()` nesse caso em vez de só devolver vazio.
-        // Trata como "sair" em vez de derrubar o processo com stack
-        // trace.
-        if (err instanceof Error && err.message.includes("readline was closed")) break;
-        throw err;
-      }
-      if (prompt.trim().toLowerCase() === "sair") break;
-      if (!prompt.trim()) continue;
+  async function* ask(prompt: string): AsyncGenerator<SarahEvent, void, unknown> {
+    // Sem cache: busca fresca antes de cada pergunta, mesma lição já
+    // registrada no docs/architecture.md sobre o bug de cache do
+    // schema do Notion. Uma consulta SQLite local é desprezível.
+    const preferences = memoryStore.listByCategory("preferencia");
+    const preferencesText =
+      preferences.length > 0
+        ? "Preferências conhecidas do usuário — aplique automaticamente ao usar outras tools, " +
+          "sem precisar perguntar de novo:\n" +
+          preferences.map((p) => `- ${p.content}`).join("\n")
+        : undefined;
 
-      // Sem cache: busca fresca antes de cada query(), mesma lição já
-      // registrada no docs/architecture.md sobre o bug de cache do
-      // schema do Notion. Uma consulta SQLite local é desprezível.
-      const preferences = memoryStore.listByCategory("preferencia");
-      const preferencesText =
-        preferences.length > 0
-          ? "Preferências conhecidas do usuário — aplique automaticamente ao usar outras tools, " +
-            "sem precisar perguntar de novo:\n" +
-            preferences.map((p) => `- ${p.content}`).join("\n")
-          : undefined;
-
-      const stream = query({
-        prompt,
-        options: {
-          mcpServers: {
-            "sarah-fixtures": fixturesServer,
-            "sarah-apple-calendar": appleCalendarServer,
-            "sarah-notion": notionServer,
-            "sarah-apple-reminders": appleRemindersServer,
-            "sarah-gmail": gmailServer,
-            "sarah-memory": memoryServer,
-            "sarah-apple-notes": appleNotesServer,
-          },
-          disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
-          canUseTool,
-          ...(sessionId ? { resume: sessionId } : {}),
-          ...(preferencesText
-            ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: preferencesText } }
-            : {}),
+    const stream = query({
+      prompt,
+      options: {
+        mcpServers: {
+          "sarah-fixtures": fixturesServer,
+          "sarah-apple-calendar": appleCalendarServer,
+          "sarah-notion": notionServer,
+          "sarah-apple-reminders": appleRemindersServer,
+          "sarah-gmail": gmailServer,
+          "sarah-memory": memoryServer,
+          "sarah-apple-notes": appleNotesServer,
         },
-      });
+        disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
+        canUseTool,
+        ...(sessionId ? { resume: sessionId } : {}),
+        ...(preferencesText
+          ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: preferencesText } }
+          : {}),
+      },
+    });
 
-      for await (const message of stream) {
-        if (message.type === "system" && message.subtype === "init") {
-          sessionId = message.session_id;
-        }
-        if (message.type === "assistant") {
-          for (const block of message.message.content) {
-            if (block.type === "text") process.stdout.write(block.text);
+    for await (const message of stream) {
+      if (message.type === "system" && message.subtype === "init") {
+        sessionId = message.session_id;
+      }
+      if (message.type === "assistant") {
+        for (const block of message.message.content) {
+          if (block.type === "text") {
+            yield { type: "text", text: block.text };
+          } else if (block.type === "tool_use") {
+            // Mesmo nome qualificado que `canUseTool`/o Gateway recebem
+            // (confirmado no tipo `BetaToolUseBlock` do SDK da
+            // Anthropic: `{ id, input, name, type: "tool_use" }`) — não
+            // é preciso esperar o `onDecision` do Gateway pra saber
+            // qual tool rodou, o mesmo stream de mensagens já diz.
+            yield { type: "tool", toolName: block.name, risk: classifyRisk(block.name) };
           }
         }
       }
-      console.log("\n");
     }
-  } finally {
-    rl.close();
+  }
+
+  function history(limit = 20): AuditRow[] {
+    return audit.recent(limit);
+  }
+
+  /**
+   * `Promise.allSettled`, não `Promise.all`: uma integração com
+   * problema (ex.: bridge JXA travando por algum motivo novo) não
+   * pode derrubar o dashboard inteiro — vira `configured: false` com
+   * o erro como detalhe, as outras quatro continuam aparecendo.
+   */
+  async function dashboard(): Promise<DashboardData> {
+    const checks: Array<{ id: string; label: string; run: () => Promise<{ configured: boolean; detail: string }> }> = [
+      { id: "sarah-apple-calendar", label: "Apple Calendar", run: checkCalendarStatus },
+      { id: "sarah-apple-reminders", label: "Apple Reminders", run: checkRemindersStatus },
+      { id: "sarah-notion", label: "Notion Calendar", run: checkNotionStatus },
+      { id: "sarah-gmail", label: "Gmail", run: checkGmailStatus },
+      { id: "sarah-apple-notes", label: "Apple Notes", run: checkNotesStatus },
+    ];
+    const settled = await Promise.allSettled(checks.map((c) => c.run()));
+    const integrations: IntegrationStatus[] = settled.map((result, i) => {
+      const { id, label } = checks[i];
+      if (result.status === "fulfilled") {
+        return { id, label, ...result.value };
+      }
+      return { id, label, configured: false, detail: result.reason instanceof Error ? result.reason.message : String(result.reason) };
+    });
+
+    return {
+      integrations,
+      riskCounts: audit.riskCounts(),
+      categoryCounts: audit.countByServer(),
+      hourlyActivity: audit.hourlyBuckets(24),
+    };
+  }
+
+  function close(): void {
     audit.close();
     memoryStore.close();
   }
+
+  return { ask, history, dashboard, close };
 }

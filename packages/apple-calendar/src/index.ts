@@ -54,3 +54,5 @@ export const appleCalendarServer = createSdkMcpServer({
   name: "sarah-apple-calendar",
   tools: [listEvents, createEvent],
 });
+
+export { checkCalendarStatus } from "./status.js";

@@ -84,3 +84,5 @@ export const notionServer = createSdkMcpServer({
   name: "sarah-notion",
   tools: [createEvent],
 });
+
+export { checkNotionStatus } from "./status.js";

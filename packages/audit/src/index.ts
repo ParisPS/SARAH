@@ -82,6 +82,71 @@ export class AuditLog {
     }));
   }
 
+  /**
+   * Contagem real de baixo vs alto risco — pro painel "proporção de
+   * risco" do dashboard (Fase 4 parte 3.5), substituindo qualquer
+   * "confiança"/indicador inventado por uma métrica que já existe de
+   * verdade no schema.
+   */
+  riskCounts(): { low: number; high: number } {
+    const rows = this.db.prepare(`SELECT risk, COUNT(*) as n FROM tool_calls GROUP BY risk`).all() as Array<{
+      risk: RiskLevel;
+      n: number;
+    }>;
+    const counts = { low: 0, high: 0 };
+    for (const row of rows) counts[row.risk] = row.n;
+    return counts;
+  }
+
+  /**
+   * Quantas chamadas por INTEGRAÇÃO (servidor MCP), extraído do
+   * `tool_name` (formato `mcp__<server>__<tool>`, ver
+   * `packages/core`) — pro painel "atividade por categoria". Tools
+   * que não seguem esse formato (ex.: `AskUserQuestion`, nativa do
+   * Agent SDK) entram com o próprio nome cru, não descartadas.
+   */
+  countByServer(): Array<{ server: string; count: number }> {
+    const rows = this.db.prepare(`SELECT tool_name FROM tool_calls`).all() as Array<{ tool_name: string }>;
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      const match = row.tool_name.match(/^mcp__([a-z0-9-]+)__/i);
+      const server = match ? match[1] : row.tool_name;
+      counts.set(server, (counts.get(server) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([server, count]) => ({ server, count }))
+      .sort((a, b) => b.count - a.count);
+  }
+
+  /**
+   * Chamadas por hora nas últimas `hours` horas — pro painel
+   * "atividade recente" (gráfico). Preenche as horas SEM nenhuma
+   * chamada com `count: 0` (em vez de simplesmente omitir), pra um
+   * gráfico de barras não "pular" horas silenciosamente — mais
+   * honesto sobre onde realmente não houve atividade.
+   */
+  hourlyBuckets(hours = 24): Array<{ hourStart: string; count: number }> {
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+    const rows = this.db
+      .prepare(`SELECT timestamp FROM tool_calls WHERE timestamp >= ?`)
+      .all(since.toISOString()) as Array<{ timestamp: string }>;
+
+    const buckets = new Map<string, number>();
+    const now = new Date();
+    for (let i = hours - 1; i >= 0; i--) {
+      const hourStart = new Date(now.getTime() - i * 60 * 60 * 1000);
+      hourStart.setMinutes(0, 0, 0);
+      buckets.set(hourStart.toISOString(), 0);
+    }
+    for (const row of rows) {
+      const hourStart = new Date(row.timestamp);
+      hourStart.setMinutes(0, 0, 0);
+      const key = hourStart.toISOString();
+      if (buckets.has(key)) buckets.set(key, (buckets.get(key) ?? 0) + 1);
+    }
+    return Array.from(buckets.entries()).map(([hourStart, count]) => ({ hourStart, count }));
+  }
+
   close(): void {
     this.db.close();
   }
