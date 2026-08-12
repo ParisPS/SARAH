@@ -41,6 +41,19 @@ import { codeServer, stopAllProjects } from "@sarah/sandbox";
  * depender de nenhum pacote de tool específico, só recebe a função
  * pronta.
  *
+ * FASE 5, PARTE 2: mesmo tratamento pro conector nativo do Base44
+ * (`mcp__claude_ai_Base44__*`) — DIFERENTE do Gmail nativo, este NÃO é
+ * bloqueado (fica disponível de propósito, pra quem tem conta
+ * premium), mas nunca é escolhido sozinho pelo agente: `code.*`
+ * (sandbox local) e Base44 são dois caminhos igualmente válidos pra
+ * "criar um site/projeto", e a escolha entre eles é sempre do usuário
+ * (ver `BASE44_POLICY_TEXT`, injetada no `systemPrompt` de toda
+ * chamada). Como cinto de segurança redundante, TODA tool do Base44 é
+ * classificada alto risco (`FORCE_HIGH_RISK` em @sarah/permissions,
+ * fora de `LOW_RISK_TOOLS`) e ganha um preview de confirmação que
+ * deixa explícito que é um serviço pago — mesmo se o agente esquecer
+ * de perguntar antes, o Gateway força a parada.
+ *
  * FASE 4, PARTE 1: `confirm` (o "faz a pergunta e espera resposta" de
  * verdade — `readline.question("... (s/n) ")` no terminal, um dialog
  * nativo no Electron) SAIU de dentro de @sarah/permissions e passou a
@@ -136,16 +149,62 @@ const BUILTIN_TOOLS_TO_BLOCK = [
 ];
 
 /**
+ * Rótulos legíveis (pt-BR) por ação do conector nativo do Base44
+ * (Fase 5, parte 2) — usados só no preview de confirmação, pra não
+ * mostrar o nome cru da tool (`create_base44_app` etc.) sem contexto.
+ * Lista best-effort: uma tool nova do conector que não esteja aqui
+ * ainda funciona (cai no fallback `action` cru dentro de
+ * `formatConfirmationInput`), só perde o texto bonito.
+ */
+const BASE44_ACTION_LABELS: Record<string, string> = {
+  create_base44_app: "criar um app novo no Base44 (a partir de uma descrição)",
+  edit_base44_app: "pedir uma mudança num app existente no Base44",
+  create_checkpoint: "criar um checkpoint (snapshot) do app no Base44",
+  edit_file: "editar um arquivo dentro do app no Base44",
+  write_file: "escrever um arquivo dentro do app no Base44",
+  read_file: "ler um arquivo do app no Base44",
+  list_directory: "listar arquivos do app no Base44",
+  grep: "buscar texto nos arquivos do app no Base44",
+  run_command: "rodar um comando dentro do ambiente do Base44",
+  get_app_status: "consultar o status de build do app no Base44",
+  get_app_preview_url: "pegar a URL de preview do app no Base44",
+  list_user_apps: "listar os apps do usuário no Base44",
+  create_entities: "criar registros de dados no Base44",
+  update_entities: "atualizar registros de dados no Base44",
+  query_entities: "consultar registros de dados no Base44",
+  create_entity_schema: "criar um modelo de dados novo no Base44",
+  update_entity_schema: "alterar um modelo de dados existente no Base44",
+  list_entity_schemas: "listar os modelos de dados do app no Base44",
+  list_connectors: "listar integrações conectadas no Base44",
+  initiate_connector_connection: "conectar uma integração externa ao app no Base44",
+  "import-claude-design-from-url": "importar um design pro app no Base44",
+};
+
+/**
  * Formatador de confirmação pro Gateway (ver `FormatConfirmationInput`
- * em @sarah/permissions) — `send_draft` (Gmail) e `git_push` (Fase 5,
- * sandbox de código) têm tratamento especial: as duas ações
- * verdadeiramente irreversíveis deste projeto até agora, então mostram
- * o que vai acontecer de forma legível ANTES de pedir confirmação, em
- * vez do input cru em JSON. Erro ao formatar (ex.: rascunho já
- * apagado) cai pro fallback padrão do Gateway — não bloqueia a
- * confirmação em si, só perde o preview bonito nesse caso raro.
+ * em @sarah/permissions) — `send_draft` (Gmail), `git_push` (Fase 5
+ * parte 1) e qualquer tool do Base44 (Fase 5 parte 2) têm tratamento
+ * especial: mostram o que vai acontecer de forma legível ANTES de
+ * pedir confirmação, em vez do input cru em JSON. Base44 entra aqui
+ * pelo mesmo motivo que as outras duas — não é sobre reversibilidade
+ * (algumas ações do Base44 são só leitura), é sobre o usuário
+ * enxergar CLARAMENTE que está prestes a acionar um serviço externo
+ * pago (conta premium), não só um `mcp__claude_ai_Base44__xyz` cru.
+ * Erro ao formatar (ex.: rascunho já apagado) cai pro fallback padrão
+ * do Gateway — não bloqueia a confirmação em si, só perde o preview
+ * bonito nesse caso raro.
  */
 async function formatConfirmationInput(toolName: string, toolInput: unknown): Promise<string | null> {
+  if (toolName.startsWith("mcp__claude_ai_Base44__")) {
+    const action = toolName.replace("mcp__claude_ai_Base44__", "");
+    const label = BASE44_ACTION_LABELS[action] ?? action;
+    return (
+      `   Base44 — app builder externo, REQUER CONTA PREMIUM\n` +
+      `   Ação: ${label}\n` +
+      `   Entrada: ${JSON.stringify(toolInput)}`
+    );
+  }
+
   if (toolName === "mcp__sarah-gmail__send_draft") {
     const { draftId } = toolInput as { draftId?: string };
     if (!draftId) return null;
@@ -177,6 +236,28 @@ async function formatConfirmationInput(toolName: string, toolInput: unknown): Pr
 
   return null;
 }
+
+/**
+ * Regra de desambiguação Base44 vs sandbox local (Fase 5, parte 2) —
+ * injetada SEMPRE no `systemPrompt`, não deixada só na `description`
+ * de cada tool (description influencia, mas não é garantida: o modelo
+ * pode simplesmente decidir sozinho com base no pedido do usuário sem
+ * reler a description com atenção). As duas ficam disponíveis de
+ * propósito — Base44 não é bloqueado, viável pra quem tem conta
+ * premium — mas a ESCOLHA entre as duas nunca é do agente: só o
+ * usuário decide. O Gateway (`FORCE_HIGH_RISK` em @sarah/permissions)
+ * é o cinto de segurança pro caso do agente esquecer isso; este texto
+ * é a tentativa de fazer o comportamento certo acontecer sem precisar
+ * chegar na confirmação.
+ */
+const BASE44_POLICY_TEXT =
+  "Ao receber um pedido pra criar um site/projeto/app e o usuário AINDA NÃO disse qual caminho quer, " +
+  'pergunte explicitamente antes de agir (use a tool AskUserQuestion, com as opções "Base44" e "Local ' +
+  '(Claude Code)") — nunca decida sozinho entre `code.create_project` (sandbox local isolado, sem ' +
+  "custo, mas só roda no seu Mac) e as tools `mcp__claude_ai_Base44__*` (serviço externo que cria e " +
+  "hospeda o app, requer conta Base44 premium). Só chame uma das duas depois que o usuário escolher. " +
+  'Se o usuário já disse o caminho no próprio pedido (ex.: "usa o Base44", "cria localmente"), pode ' +
+  "seguir direto sem perguntar de novo.";
 
 // Ver "bug real corrigido" no comentário do topo — caminho absoluto a
 // partir deste arquivo-fonte, não do `cwd` do processo que importou
@@ -295,6 +376,10 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "sem precisar perguntar de novo:\n" +
           preferences.map((p) => `- ${p.content}`).join("\n")
         : undefined;
+    // BASE44_POLICY_TEXT entra SEMPRE (não depende de haver preferência
+    // guardada) — é regra de comportamento do agente, não fato sobre o
+    // usuário.
+    const systemPromptAppend = [BASE44_POLICY_TEXT, preferencesText].filter(Boolean).join("\n\n");
 
     const stream = query({
       prompt,
@@ -312,9 +397,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
         disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
         canUseTool,
         ...(sessionId ? { resume: sessionId } : {}),
-        ...(preferencesText
-          ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: preferencesText } }
-          : {}),
+        systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPromptAppend },
       },
     });
 

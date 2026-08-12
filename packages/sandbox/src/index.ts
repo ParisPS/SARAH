@@ -20,6 +20,13 @@ import { createProject, writeProjectFile, runProjectCommand, gitCommit, gitPush,
  * exceção, e fica de fora de propósito, SEMPRE alto risco, sem
  * exceção — regra definida desde a primeira mensagem deste projeto,
  * não muda por estar "dentro" do sandbox.
+ *
+ * Fase 5, parte 2: este sandbox local passou a dividir espaço com o
+ * conector nativo do Base44 (`mcp__claude_ai_Base44__*`, outro jeito
+ * de criar/hospedar um site, externo, requer conta premium) — os dois
+ * são caminhos válidos, a escolha é sempre do usuário, nunca decidida
+ * sozinha pelo agente (ver a description de `create_project` abaixo e
+ * `BASE44_POLICY_TEXT` em `packages/core/src/index.ts`).
  */
 
 const createProjectTool = tool(
@@ -29,7 +36,13 @@ const createProjectTool = tool(
     "de um container isolado (sem acesso ao resto do Mac, sem acesso à rede local, só internet). " +
     "Chame esta tool ANTES de qualquer outra `code.*` pra esse projeto — as outras tools recebem o " +
     "mesmo `project` (nome ou slug) que essa retorna. Baixo risco: cria só uma pasta vazia + " +
-    "container, nada destrutivo.",
+    "container, nada destrutivo.\n\n" +
+    "IMPORTANTE — desambiguação com Base44: esta NÃO é a única forma de criar um site/app disponível. " +
+    "O conector `mcp__claude_ai_Base44__*` (app builder externo, requer conta premium) também cria e " +
+    "hospeda projetos. Se o usuário pedir pra criar um site/projeto/app SEM já ter dito qual caminho " +
+    "quer, NÃO chame esta tool (nem uma tool do Base44) direto — pergunte antes, explicitamente, com " +
+    'as opções "Base44" e "Local (Claude Code)". Só chame create_project depois que o usuário escolher ' +
+    '"Local", ou se o pedido original já deixou isso claro (ex.: "cria localmente", "usa o Claude Code").',
   {
     name: z.string().describe("nome do projeto (vira um slug: minúsculo, só letras/números/hífen)"),
   },

@@ -87,9 +87,31 @@ const LOW_RISK_TOOLS = new Set<string>([
   // baixo risco, ponto final. Ver formatConfirmationInput em
   // packages/core pro preview (remote/branch/force) mostrado antes da
   // confirmação.
+  //
+  // Base44 (conector nativo `mcp__claude_ai_Base44__*`, Fase 5 parte
+  // 2): fica DE FORA de propósito, igual git_push — NENHUMA das tools
+  // desse conector entra aqui. Não é sobre destrutividade (várias são
+  // só leitura, ex. `get_app_status`), é sobre custo: Base44 é um
+  // serviço externo pago (conta premium), então qualquer chamada
+  // precisa de confirmação explícita do usuário, nunca decidida
+  // sozinha pelo agente. Ver `FORCE_HIGH_RISK` logo abaixo — reforço
+  // redundante de propósito, pra continuar valendo mesmo que algum dia
+  // alguém adicione uma tool do Base44 aqui por engano.
 ]);
 
+/**
+ * Reforço redundante sobre `LOW_RISK_TOOLS`: mesmo que uma tool do
+ * Base44 acabe entrando na lista acima por engano no futuro, este
+ * padrão força alto risco de qualquer forma — o Gateway nunca deixa
+ * uma chamada a `mcp__claude_ai_Base44__*` passar em silêncio.
+ * Nenhuma outra tool deste projeto precisa disso hoje (é fail-safe por
+ * padrão), mas Base44 ganhou reforço explícito por ser a primeira
+ * integração deste projeto que custa dinheiro de verdade pro usuário.
+ */
+const FORCE_HIGH_RISK = [/^mcp__claude_ai_Base44__/];
+
 export function classifyRisk(toolName: string): RiskLevel {
+  if (FORCE_HIGH_RISK.some((pattern) => pattern.test(toolName))) return "high";
   return LOW_RISK_TOOLS.has(toolName) ? "low" : "high";
 }
 

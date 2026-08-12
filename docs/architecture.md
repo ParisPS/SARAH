@@ -2085,6 +2085,105 @@ preview do site de teste (`http://127.0.0.1:<porta>`) abriu e mostrou
 o conteúdo esperado — validação end-to-end fechada, do prompt até o
 navegador.
 
+## Decisões e bugs encontrados na Fase 5, parte 2 (Base44 vs sandbox local — desambiguação)
+
+Contexto: o conector nativo do Base44 (`mcp__claude_ai_Base44__*`, app
+builder externo do próprio ambiente `claude.ai`, requer conta premium)
+apareceu disponível junto das tools de `@sarah/sandbox`. Diferente do
+conector nativo do Gmail (bloqueado de vez via `disallowedTools`, Fase
+1 — porque a SARAH já tem sua própria tool de Gmail, melhor: OAuth
+próprio, auditada, sem depender de sessão externa), o Base44 **não
+tem equivalente próprio** e é uma escolha legítima do usuário (quem
+tem conta premium pode preferir hospedagem pronta em vez do sandbox
+local) — por isso a decisão aqui não é bloquear, é garantir que a
+ESCOLHA entre os dois caminhos nunca seja feita pelo agente sozinho.
+
+### Três camadas de reforço, não uma só
+
+1. **Description da tool** (`create_project`, `packages/sandbox/src/index.ts`):
+   instrui explicitamente a perguntar antes de agir quando o pedido não
+   especifica o caminho.
+2. **`systemPrompt` sempre injetado** (`BASE44_POLICY_TEXT`,
+   `packages/core/src/index.ts`): a mesma regra, mas garantida em TODA
+   chamada — não depende do modelo reler a description com atenção no
+   meio de um pedido mais longo. Antes desta fase, o `systemPrompt`
+   só levava um `append` quando havia preferência guardada
+   (`preferencesText`); agora os dois textos são concatenados
+   (`BASE44_POLICY_TEXT` sempre presente, `preferencesText` só quando
+   existe alguma preferência).
+3. **Gateway** (`FORCE_HIGH_RISK` em `@sarah/permissions`): cinto de
+   segurança pro caso das duas primeiras falharem — TODA tool
+   `mcp__claude_ai_Base44__*` é forçada a alto risco por um regex
+   dedicado, verificado ANTES de checar `LOW_RISK_TOOLS`. Não é sobre
+   destrutividade (várias tools do Base44 são só leitura, ex.
+   `get_app_status`) — é sobre custo: qualquer chamada aciona um
+   serviço pago, então precisa de confirmação explícita sempre, sem
+   exceção, mesmo que uma dessas tools acabe entrando em
+   `LOW_RISK_TOOLS` por engano no futuro. `formatConfirmationInput`
+   (`packages/core/src/index.ts`) ganhou um caso pro Base44, mesmo
+   padrão já usado pro `send_draft`/`git_push`: traduz o nome cru da
+   ação (`BASE44_ACTION_LABELS`) e deixa explícito **"REQUER CONTA
+   PREMIUM"** no preview, em vez de mostrar só o JSON do input.
+
+### Validação de verdade — dois cenários, via o agente real
+
+Script (`test-base44-ambiguity.ts`, scratchpad) chamou
+`createSarahSession` de verdade, com um `confirm` que aprova só
+`AskUserQuestion` (uma pergunta não tem efeito colateral nenhum) e
+NEGA qualquer coisa que de fato crie/acione algo — de propósito, pra
+nunca chegar a acionar o Base44 real nem gastar cota, só confirmar que
+a PERGUNTA acontece no momento certo.
+
+**Cenário 1 — pedido ambíguo** ("cria um site simples de portfólio pra
+mim"): o agente chamou `AskUserQuestion` com exatamente as duas opções
+esperadas ("Local (Claude Code)" / "Base44", com descrição de cada
+uma) — **não** chamou `create_project` nem nenhuma tool do Base44
+antes de perguntar.
+
+**Achado lateral sobre o próprio `AskUserQuestion` neste ambiente
+headless**: aprovado pelo Gateway, o tool call em si roda, mas como
+nenhuma das interfaces deste projeto (`apps/cli`, `apps/menubar`) tem
+um seletor visual interativo conectado a essa tool específica (só o
+dialog s/n genérico do Gateway), ela volta sem uma escolha real
+capturada. O agente reconheceu isso graciosamente e, em vez de travar
+ou escolher por conta própria, respondeu em TEXTO pedindo pro usuário
+escolher no próximo prompt — ou seja, a resposta de verdade chega pelo
+próximo `ask()`, igual qualquer outra pergunta de esclarecimento do
+agente (mesmo padrão já documentado na Fase 2 sobre `AskUserQuestion`
+ser alto risco). Nenhum código mudou por causa disso — é o
+comportamento correto de qualquer forma (nunca decide sozinho), só
+fica registrado aqui pra não ser redescoberto do zero numa fase
+futura que precise de um seletor visual de verdade (isso sim exigiria
+trabalho extra em `apps/menubar`).
+
+**Cenário 2 — pedido explícito** ("cria um site de portfólio simples,
+usa o Base44"): o agente NÃO perguntou (o caminho já estava dito) e
+foi direto pra `mcp__claude_ai_Base44__create_base44_app`. O Gateway
+interceptou como alto risco e mostrou o preview novo:
+
+```
+Base44 — app builder externo, REQUER CONTA PREMIUM
+Ação: criar um app novo no Base44 (a partir de uma descrição)
+Entrada: {"appPrompt":"cria um site de portfólio simples, com uma página inicial"}
+```
+
+Negado de propósito (mesmo motivo do cenário 1: não acionar o serviço
+de verdade) — o agente recuou de forma limpa, sem erro, oferecendo
+retomar depois.
+
+### Achado lateral (sem ação): `ToolSearch` não passa pelo Gateway
+
+Durante o cenário 2, o agente chamou `ToolSearch` (mecanismo do
+próprio Agent SDK pra carregar o schema de uma tool "deferida" antes
+de poder chamá-la — necessário porque as tools do Base44 chegam desse
+jeito) e essa chamada NÃO passou pelo `canUseTool`/Gateway (nenhuma
+confirmação pedida, mesmo sendo classificada como alto risco só pelo
+fail-safe de nome desconhecido). Registrado aqui, sem ação de código
+agora: `ToolSearch` só consulta schemas (sem efeito colateral, não
+executa nada), então não é um risco de verdade — mas vale saber que
+esse mecanismo específico do SDK roda fora do Gateway, caso uma fase
+futura precise que TODO tool call, sem exceção, passe pela auditoria.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -2130,7 +2229,16 @@ navegador.
    respondendo via `curl` externo — incluindo o cenário de reiniciar a
    sessão (dois bugs reais encontrados e corrigidos nesse teste:
    limpeza de container órfão matando sessão alheia ainda viva, e
-   relabeling SELinux quebrando ao reabrir projeto com commits).)**
+   relabeling SELinux quebrando ao reabrir projeto com commits). **Fase
+   5 parte 2 completa**: o conector nativo do Base44 (app builder
+   externo, conta premium) ficou disponível a propósito, mas nunca
+   escolhido sozinho pelo agente — desambiguação em três camadas
+   (description da tool, `systemPrompt` sempre injetado, e
+   `FORCE_HIGH_RISK` no Gateway forçando alto risco com preview
+   explicando "requer conta premium"), validada de ponta a ponta via o
+   agente real em dois cenários (pedido ambíguo → pergunta antes de
+   agir; pedido explícito "usa o Base44" → Gateway intercepta e avisa
+   sobre a conta premium).)**
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
    nuance no risco médio.
@@ -2221,3 +2329,14 @@ commits git (corrigido com `--security-opt label=disable`, sem afetar
 nenhuma das outras garantias de isolamento, revalidadas depois da
 mudança). `git_push` não foi testado contra um remoto real, por
 instrução explícita — só a recusa por falta de credencial.
+
+**Fase 5, parte 2 está completa** (Base44 vs sandbox local —
+desambiguação, detalhes na seção acima): o conector nativo do Base44
+não foi bloqueado — fica disponível como caminho alternativo legítimo
+pra quem tem conta premium — mas a escolha entre ele e `code.*` nunca
+é decidida sozinha pelo agente, reforçada em três camadas (description
+da tool, `systemPrompt` sempre injetado, e `FORCE_HIGH_RISK` no
+Gateway). Validado rodando de verdade via o agente: pedido ambíguo →
+pergunta antes (`AskUserQuestion` com as duas opções corretas);
+pedido explícito "usa o Base44" → Gateway intercepta com preview
+mencionando a conta premium.
