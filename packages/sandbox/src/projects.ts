@@ -11,7 +11,8 @@ import {
   PREVIEW_CONTAINER_PORT,
   type ExecResult,
 } from "./podman.js";
-import { getProjectDeployKey } from "./git-credential.js";
+import { getProjectDeployKey, saveProjectDeployKey } from "./git-credential.js";
+import { getGithubToken, createGithubRepo, provisionDeployKey } from "./github.js";
 
 /**
  * Ciclo de vida do container por projeto (Fase 5 parte 1 — decisão que
@@ -60,6 +61,7 @@ interface ProjectRuntime {
   containerName: string;
   previewHostPort: number;
   lastUsedAt: number;
+  githubUrl?: string;
 }
 
 const projects = new Map<string, ProjectRuntime>();
@@ -103,14 +105,28 @@ async function ensurePodmanReady(): Promise<void> {
   podmanChecked = true;
 }
 
-export async function createProject(name: string): Promise<{ slug: string; hostDir: string; alreadyExisted: boolean }> {
+export interface CreateProjectResult {
+  slug: string;
+  hostDir: string;
+  alreadyExisted: boolean;
+  github: { htmlUrl: string | null; note: string };
+}
+
+export async function createProject(name: string): Promise<CreateProjectResult> {
   await ensurePodmanReady();
   const slug = slugify(name);
 
   const existing = projects.get(slug);
   if (existing) {
     existing.lastUsedAt = Date.now();
-    return { slug, hostDir: existing.hostDir, alreadyExisted: true };
+    return {
+      slug,
+      hostDir: existing.hostDir,
+      alreadyExisted: true,
+      github: existing.githubUrl
+        ? { htmlUrl: existing.githubUrl, note: "Projeto já tinha um repositório no GitHub associado." }
+        : { htmlUrl: null, note: "Projeto reaproveitado sem repositório no GitHub associado." },
+    };
   }
 
   const hostDir = join(PROJECTS_ROOT, slug);
@@ -126,6 +142,8 @@ export async function createProject(name: string): Promise<{ slug: string; hostD
 
   const container = await createProjectContainer(slug, hostDir);
 
+  const github = await setUpGithubRepo(slug, hostDir);
+
   projects.set(slug, {
     slug,
     name,
@@ -133,9 +151,71 @@ export async function createProject(name: string): Promise<{ slug: string; hostD
     containerName: container.name,
     previewHostPort: container.previewHostPort,
     lastUsedAt: Date.now(),
+    githubUrl: github.htmlUrl ?? undefined,
   });
 
-  return { slug, hostDir, alreadyExisted: false };
+  return { slug, hostDir, alreadyExisted: false, github };
+}
+
+/**
+ * Fluxo PADRÃO de `create_project` desde a Fase 5 parte 3: cria (ou
+ * reaproveita, se o projeto for reaberto) um repositório PRIVADO vazio
+ * no GitHub pra este projeto, configura `origin` (SSH, pra a chave de
+ * deploy funcionar) e provisiona uma chave de deploy nova pro
+ * repositório — tudo isso SEM pedir confirmação (baixo risco: pasta
+ * local + repositório vazio são reversíveis, nenhum código foi
+ * enviado ainda). `git push` continua exigindo confirmação de alto
+ * risco à parte, sem exceção (`code.git_push`, inalterado).
+ *
+ * Se nenhum token do GitHub estiver configurado (`getGithubToken`
+ * retorna `null` — estado padrão antes de rodar `pnpm github:auth`),
+ * NÃO falha a criação do projeto — só cria a pasta local, sem
+ * repositório, com uma nota clara. Mesmo espírito fail-safe já usado
+ * em `gitPush` (recusa com mensagem clara, nunca trava o resto).
+ */
+async function setUpGithubRepo(slug: string, hostDir: string): Promise<{ htmlUrl: string | null; note: string }> {
+  const token = await getGithubToken();
+  if (!token) {
+    return {
+      htmlUrl: null,
+      note:
+        "GitHub não configurado nesta máquina ainda (rode `pnpm github:auth` uma vez) — projeto criado só " +
+        "localmente, sem repositório remoto.",
+    };
+  }
+
+  // Erro daqui em diante (API do GitHub fora do ar, token revogado
+  // depois de configurado, limite de repositório atingido etc.) NÃO
+  // pode derrubar a criação do projeto LOCAL — o container e a pasta
+  // já existem nesse ponto. Mesmo espírito `Promise.allSettled` já
+  // usado no dashboard (`@sarah/core`): uma integração com problema
+  // vira uma nota clara, não um erro que trava o resto.
+  try {
+    const repo = await createGithubRepo(token, slug);
+
+    const currentRemote = await runHost("git", ["remote", "get-url", "origin"], hostDir);
+    if (currentRemote.code !== 0) {
+      await runHost("git", ["remote", "add", "origin", repo.sshUrl], hostDir);
+    }
+
+    const existingKey = await getProjectDeployKey(slug);
+    if (!existingKey) {
+      const privateKey = await provisionDeployKey(token, repo.owner, repo.repo, slug);
+      await saveProjectDeployKey(slug, privateKey);
+    }
+
+    return {
+      htmlUrl: repo.htmlUrl,
+      note: repo.reused
+        ? "Repositório no GitHub já existia (projeto reaberto) — reaproveitado, `origin` conferido."
+        : "Repositório PRIVADO vazio criado no GitHub, `origin` configurado, chave de deploy pronta pro primeiro `git_push`.",
+    };
+  } catch (err) {
+    return {
+      htmlUrl: null,
+      note: `Projeto criado só localmente — falha ao configurar o GitHub: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
 }
 
 function requireProject(projectSlug: string): ProjectRuntime {

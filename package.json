@@ -7,10 +7,12 @@
   },
   "scripts": {
     "dev": "pnpm --filter cli dev",
-    "gmail:auth": "tsx scripts/gmail-auth.ts"
+    "gmail:auth": "tsx scripts/gmail-auth.ts",
+    "github:auth": "tsx scripts/github-auth.ts"
   },
   "dependencies": {
-    "@sarah/gmail": "workspace:*"
+    "@sarah/gmail": "workspace:*",
+    "@sarah/sandbox": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

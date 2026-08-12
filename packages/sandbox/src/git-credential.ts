@@ -53,11 +53,39 @@ function run(command: string, args: string[]): Promise<{ code: number; stdout: s
   });
 }
 
+/**
+ * Bug real encontrado validando a Fase 5 parte 3 (primeira vez que uma
+ * chave de verdade passou por este caminho — até então só o "recusa
+ * sem credencial" tinha sido testado): `security find-generic-password
+ * -w` devolve o segredo HEX-ENCODED (não os bytes originais) sempre
+ * que o valor salvo contém quebra de linha — reproduzido isolado, sem
+ * relação nenhuma com geração de chave SSH (`printf 'a\nb\n'` salvo e
+ * lido de volta já vem como `612e2e2e`). Uma chave privada SSH
+ * (formato PEM) é inerentemente multi-linha, então TODA chave batia
+ * nesse caso — o valor usado depois em `GIT_SSH_COMMAND`/`ssh -i`
+ * dentro do container não era a chave de verdade, e o SSH falhava com
+ * "error in libcrypto" (lixo binário sendo interpretado como chave).
+ * Valores de UMA linha só (testado: token do Gmail, string simples)
+ * não sofrem disso — é específico de conteúdo multi-linha.
+ *
+ * Corrigido guardando/lendo em base64 (sem quebra de linha nenhuma,
+ * `Buffer.toString("base64")` não insere): o Keychain nunca mais vê um
+ * valor com `\n`, então o bug de hex-encoding do `security` nunca é
+ * acionado. Decodificado de volta pra PEM original só na hora de usar.
+ */
+function encode(value: string): string {
+  return Buffer.from(value, "utf-8").toString("base64");
+}
+
+function decode(value: string): string {
+  return Buffer.from(value, "base64").toString("utf-8");
+}
+
 /** `null` se nenhuma chave foi configurada pra esse projeto ainda — não é um erro, é o estado padrão. */
 export async function getProjectDeployKey(slug: string): Promise<string | null> {
   const { code, stdout } = await run("security", ["find-generic-password", "-a", account(), "-s", servicePrefix(slug), "-w"]);
   if (code !== 0 || !stdout.trim()) return null;
-  return stdout;
+  return decode(stdout.trim());
 }
 
 export async function saveProjectDeployKey(slug: string, privateKeyPem: string): Promise<void> {
@@ -68,7 +96,7 @@ export async function saveProjectDeployKey(slug: string, privateKeyPem: string):
     "-s",
     servicePrefix(slug),
     "-w",
-    privateKeyPem,
+    encode(privateKeyPem),
     "-U",
   ]);
   if (code !== 0) {

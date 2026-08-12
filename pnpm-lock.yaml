@@ -11,6 +11,9 @@ importers:
       '@sarah/gmail':
         specifier: workspace:*
         version: link:packages/gmail
+      '@sarah/sandbox':
+        specifier: workspace:*
+        version: link:packages/sandbox
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

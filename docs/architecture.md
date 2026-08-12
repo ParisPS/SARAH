@@ -2184,6 +2184,166 @@ executa nada), então não é um risco de verdade — mas vale saber que
 esse mecanismo específico do SDK roda fora do Gateway, caso uma fase
 futura precise que TODO tool call, sem exceção, passe pela auditoria.
 
+## Decisões e bugs encontrados na Fase 5, parte 3 (GitHub automático — revoga o "sempre pergunta" da parte 2)
+
+Instrução explícita do usuário: revogar a regra da parte 2 de sempre
+perguntar "Base44 ou local" antes de criar um site/projeto. Regra
+nova — `code.create_project` vira o caminho PADRÃO, sem perguntar
+nada: cria a pasta local **e** um repositório novo no GitHub pra esse
+projeto. Base44 só entra se o usuário pedir por nome. Risco: pasta
+local + repositório VAZIO no GitHub continuam baixo risco (reversível,
+nada enviado ainda); `git_push` de conteúdo continua sempre alto
+risco, sem exceção — isso não mudou.
+
+### Checagem pedida antes de implementar: a credencial existente serve pra CRIAR repositório?
+
+Não. Confirmado empiricamente, não assumido — três checagens
+separadas, todas negativas:
+
+1. **A credencial já existente (`git-credential.ts`) é uma chave de
+   deploy SSH por projeto** — só serve pra `git push`/`pull` num
+   repositório que JÁ EXISTE (uma chave de deploy é cadastrada NO
+   repositório depois que ele existe, via `POST
+   /repos/{owner}/{repo}/keys`). Ela não dá acesso nenhum à API HTTP
+   do GitHub, então não tem como criar um repositório novo com ela —
+   isso é estrutural, não uma limitação de configuração.
+2. **`gh` CLI não está instalado nesta máquina** (`which gh` →
+   `command not found`).
+3. **Nenhum token do GitHub configurado em lugar nenhum**: sem
+   variável no `.env`, sem entrada no Keychain (`security
+   find-generic-password -s sarah-code-github-token` → "item could
+   not be found").
+
+Ou seja, a suposição do pedido original ("reaproveitando a credencial
+de git já configurada") não se sustentava — criar repositório é uma
+operação de CONTA (`POST /user/repos` da API REST do GitHub), que
+exige um token bem mais amplo que uma chave de deploy por projeto.
+
+### Decisão: token de conta separado, checado na documentação oficial antes de escolher o tipo
+
+Antes de decidir entre PAT clássico e PAT "fine-grained" (mais
+restrito por natureza, preferível em teoria), consultei a documentação
+oficial da REST API do GitHub pro endpoint `POST /user/repos`: ela
+confirma escopo `repo`/`public_repo` pra PAT clássico, mas NÃO
+documenta suporte equivalente pra fine-grained. Como criar
+repositório é justamente a operação que este projeto precisa (e um
+fine-grained token não pode ser pré-escopado pra um repositório que
+ainda não existe), decidido usar PAT clássico, escopo `repo` — mais
+amplo que o ideal, mitigado da seguinte forma:
+
+- Guardado no Keychain do macOS (`sarah-code-github-token`), mesmo
+  padrão do refresh token do Gmail.
+- Usado SÓ pelo processo do daemon (nunca entra no container) — só
+  em duas chamadas HTTP pontuais dentro de `create_project` (criar o
+  repo + cadastrar uma chave de deploy nova).
+- Depois de criar o repositório, o token amplo NÃO É MAIS NECESSÁRIO:
+  uma chave de deploy NOVA (ed25519, gerada com `ssh-keygen` numa
+  pasta temporária apagada logo depois) é cadastrada no repositório
+  recém-criado com `read_write: true`, e salva no MESMO slot do
+  Keychain por projeto que `git_push` já usava desde a Fase 5 parte 1
+  (`getProjectDeployKey`/`saveProjectDeployKey`, sem nenhuma mudança
+  nesse mecanismo). Ou seja: o blast radius de uma eventual chave
+  vazada continua escopado por projeto pro dia a dia — só a operação
+  de CRIAÇÃO usa o token mais amplo, uma vez por projeto.
+
+### Setup: `pnpm github:auth`, mesmo padrão do `pnpm gmail:auth`
+
+Diferente do Gmail (fluxo OAuth completo, loopback+PKCE — precisa de
+um app OAuth registrado), um PAT clássico não tem esse aparato: o
+usuário gera manualmente em
+`https://github.com/settings/tokens/new` (escopo `repo`) e cola no
+prompt do script. O script (`scripts/github-auth.ts`) valida com uma
+chamada real (`GET /user`, confirmando o login associado) ANTES de
+salvar — nunca aceita um token sem testar.
+
+### Fail-safe: sem token configurado, `create_project` não quebra
+
+Se `getGithubToken()` devolver `null` (estado padrão antes do
+`pnpm github:auth`), `create_project` cria a pasta local normalmente e
+devolve uma nota clara em vez de recusar — mesmo espírito de
+`gitPush` recusando com mensagem clara em vez de travar. Erros DEPOIS
+de já ter o token (API do GitHub fora do ar, limite de repositório
+atingido, token revogado no meio do caminho) também não derrubam a
+criação do projeto local — capturados e reportados como nota, mesmo
+padrão `Promise.allSettled` já usado no dashboard.
+
+### Validação real, via o agente — parte 1 (sem token configurado ainda)
+
+Pedido "cria um site simples de teste... escreve um index.html
+básico", sem mencionar caminho nenhum: o agente chamou
+`create_project` e `write_file` DIRETO, sem perguntar nada (confirma a
+revogação da regra da parte 2) — as duas rodaram como `auto-allow`
+(baixo risco). Como nenhum token do GitHub estava configurado ainda
+nesta validação, o agente reportou isso claramente ao usuário
+("repositório remoto não foi criado porque... `pnpm github:auth`") em
+vez de fingir que funcionou ou travar. Conferido no disco: pasta
+criada em `~/SarahProjects/teste-sarah-github/` com o `index.html`,
+SEM remote configurado, SEM commit ainda (nenhum `git_commit` foi
+pedido) — exatamente o esperado pro caminho sem token. Reconfirmado
+também que o pedido explícito "faz pelo Base44" continua funcionando
+como antes (parte 2, inalterada): o agente foi direto pro Base44 sem
+perguntar, e o Gateway interceptou com o preview de conta premium.
+
+### Bug real #3 encontrado na validação com token de verdade: `security -w` devolve segredo multi-linha como HEX, não como texto
+
+Depois do usuário configurar `pnpm github:auth` (token validado,
+`GET /user` confirmando o login `ParisPS`, escopo `repo`), rodei o
+fluxo completo de verdade: `create_project` → repositório privado
+criado em `https://github.com/ParisPS/sarah-github-teste` → chave de
+deploy provisionada → `write_file` → `git_commit` → `git_push`
+(aprovado no Gateway). O push falhou com `Load key
+"/tmp/.sarah_deploy_key": error in libcrypto` / `Permission denied
+(publickey)`.
+
+Investigado (não assumido): não era a geração da chave (`ssh-keygen`),
+era o ARMAZENAMENTO. Reproduzido isolado, sem nenhum código do
+projeto no meio — `security add-generic-password -w "$(printf
+'line1\nline2\n')"` seguido de `security find-generic-password -w`
+devolve `6c696e65310a6c696e65320a` (a string HEX-ENCODED, como texto),
+não os bytes originais. Confirmado que valores de UMA linha só (ex.:
+`"texto sem quebra de linha"`) fazem o round-trip perfeitamente — o
+bug do `security` CLI é especificamente sobre conteúdo com quebra de
+linha, que é exatamente o que uma chave privada SSH em formato PEM
+sempre tem. Esse mecanismo de Keychain (`git-credential.ts`) nunca
+tinha sido testado de ponta a ponta com uma chave de verdade até
+agora — a validação da Fase 5 parte 1 só cobriu o caminho "recusa sem
+credencial configurada" (por instrução explícita, pra não testar push
+contra remoto real cedo demais).
+
+Corrigido guardando o valor em base64 (`Buffer.toString("base64")` —
+nunca insere quebra de linha) em vez do PEM cru, decodificado de volta
+só na hora de usar. Revalidado apagando a chave quebrada do Keychain,
+reabrindo o mesmo projeto (reprovisiona a chave automaticamente,
+mesmo caminho de "projeto reaberto sem chave ainda" já existente) e
+tentando o push de novo.
+
+### Validação final — de ponta a ponta, conferida de FORA do fluxo (API do GitHub direto, não só o texto do agente)
+
+Depois do fix, o `git_push` funcionou. Conferido direto na API REST do
+GitHub (não confiando só na resposta do agente):
+
+- `GET /repos/ParisPS/sarah-github-teste` → `private: true`,
+  `default_branch: main`, `pushed_at` recente.
+- `GET /repos/.../contents/index.html?ref=main` → conteúdo batendo
+  exatamente com o que `write_file` escreveu ("Fase 5 parte 3
+  funcionando").
+- `GET /repos/.../keys` → chave de deploy cadastrada com
+  `read_only: false` (read-write, como pedido).
+
+Limpeza pós-validação: apagada via API a chave de deploy ÓRFÃ que
+ficou registrada no GitHub durante o bug (a primeira tentativa, antes
+do fix, gerou e cadastrou uma chave que nunca foi usada de verdade —
+sem risco por ser só a parte PÚBLICA, mas removida por higiene).
+Containers locais pararam normalmente ao fim de cada teste
+(`session.close()`).
+
+**O repositório de teste (`github.com/ParisPS/sarah-github-teste`) e a
+pasta local (`~/SarahProjects/sarah-github-teste/`) foram deixados
+como estão** — diferente de um container (efêmero por design), um
+repositório no GitHub é um artefato real na conta do usuário; apagar
+sem pedir seria uma ação difícil de reverter e de fora do escopo desta
+sessão. Fica disponível pro usuário decidir se quer manter ou apagar.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -2238,7 +2398,19 @@ futura precise que TODO tool call, sem exceção, passe pela auditoria.
    explicando "requer conta premium"), validada de ponta a ponta via o
    agente real em dois cenários (pedido ambíguo → pergunta antes de
    agir; pedido explícito "usa o Base44" → Gateway intercepta e avisa
-   sobre a conta premium).)**
+   sobre a conta premium). **Fase 5 parte 3 completa**: revogado o
+   "sempre pergunta" da parte 2 — `create_project` virou o caminho
+   PADRÃO, criando pasta local E repositório privado no GitHub sozinho
+   (token de conta separado, escopo `repo`, usado só pelo daemon,
+   nunca entra no container; auto-provisiona uma chave de deploy só
+   pro projeto logo depois, então o token amplo não é necessário de
+   novo). Base44 só entra se pedido por nome. Validado de ponta a
+   ponta com um token real: repositório criado, `write_file` +
+   `git_commit` + `git_push` reais, confirmados direto na API do
+   GitHub (não só no texto do agente) — incluindo um bug real
+   encontrado e corrigido nessa validação (`security -w` devolvia
+   segredos multi-linha como hex em vez do texto original; toda chave
+   SSH batia nisso — corrigido guardando em base64 no Keychain).)**
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
    nuance no risco médio.
@@ -2340,3 +2512,20 @@ Gateway). Validado rodando de verdade via o agente: pedido ambíguo →
 pergunta antes (`AskUserQuestion` com as duas opções corretas);
 pedido explícito "usa o Base44" → Gateway intercepta com preview
 mencionando a conta premium.
+
+**Fase 5, parte 3 está completa** (GitHub automático — revoga o
+"sempre pergunta" da parte 2, detalhes na seção acima): checado antes
+de implementar que a credencial existente (chave de deploy por
+projeto) NÃO serve pra criar repositório (é estrutural — deploy keys
+só existem depois que o repo já existe); nem `gh` CLI nem token nenhum
+estavam configurados. Implementado um PAT clássico de conta (escopo
+`repo`, checado contra a documentação oficial antes de escolher o
+tipo), guardado no Keychain via `pnpm github:auth`, usado só pelo
+daemon pra criar o repo + provisionar uma chave de deploy nova por
+projeto (token amplo não é mais necessário depois disso). Validado de
+ponta a ponta com um token real do usuário: repositório privado
+criado, arquivo escrito, commit e push reais, tudo conferido direto na
+API do GitHub — incluindo um bug real encontrado e corrigido nesse
+teste (`security -w` devolvendo segredos multi-linha como hex em vez
+do texto original, afetando toda chave SSH guardada no Keychain;
+corrigido guardando em base64).

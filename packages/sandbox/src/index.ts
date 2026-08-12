@@ -24,9 +24,18 @@ import { createProject, writeProjectFile, runProjectCommand, gitCommit, gitPush,
  * Fase 5, parte 2: este sandbox local passou a dividir espaço com o
  * conector nativo do Base44 (`mcp__claude_ai_Base44__*`, outro jeito
  * de criar/hospedar um site, externo, requer conta premium) — os dois
- * são caminhos válidos, a escolha é sempre do usuário, nunca decidida
- * sozinha pelo agente (ver a description de `create_project` abaixo e
- * `BASE44_POLICY_TEXT` em `packages/core/src/index.ts`).
+ * são caminhos válidos.
+ *
+ * Fase 5, parte 3: REVOGA a regra da parte 2 de sempre perguntar
+ * "Base44 ou local" antes de agir. Regra nova: `create_project` É O
+ * PADRÃO — cria a pasta local E (se `pnpm github:auth` já foi rodado)
+ * um repositório novo no GitHub pra esse projeto, sem perguntar nada.
+ * Base44 só entra se o usuário pedir por nome explicitamente (ver
+ * `BASE44_POLICY_TEXT` em `packages/core/src/index.ts` — reescrita
+ * pra essa regra nova). O risco continua igual: pasta local +
+ * repositório VAZIO no GitHub são baixo risco (reversíveis, nada
+ * enviado ainda); `git_push` de conteúdo de verdade continua exigindo
+ * confirmação de alto risco, sem exceção.
  */
 
 const createProjectTool = tool(
@@ -34,15 +43,16 @@ const createProjectTool = tool(
   "Cria um projeto de código novo (ou reabre um já existente nesta sessão) — uma pasta dedicada FORA " +
     "do repositório da própria SARAH (`~/SarahProjects/<slug>/`, com seu próprio git), rodando dentro " +
     "de um container isolado (sem acesso ao resto do Mac, sem acesso à rede local, só internet). " +
-    "Chame esta tool ANTES de qualquer outra `code.*` pra esse projeto — as outras tools recebem o " +
-    "mesmo `project` (nome ou slug) que essa retorna. Baixo risco: cria só uma pasta vazia + " +
-    "container, nada destrutivo.\n\n" +
-    "IMPORTANTE — desambiguação com Base44: esta NÃO é a única forma de criar um site/app disponível. " +
-    "O conector `mcp__claude_ai_Base44__*` (app builder externo, requer conta premium) também cria e " +
-    "hospeda projetos. Se o usuário pedir pra criar um site/projeto/app SEM já ter dito qual caminho " +
-    "quer, NÃO chame esta tool (nem uma tool do Base44) direto — pergunte antes, explicitamente, com " +
-    'as opções "Base44" e "Local (Claude Code)". Só chame create_project depois que o usuário escolher ' +
-    '"Local", ou se o pedido original já deixou isso claro (ex.: "cria localmente", "usa o Claude Code").',
+    "TAMBÉM cria automaticamente um repositório PRIVADO vazio no GitHub pra esse projeto (se " +
+    "`pnpm github:auth` já foi configurado nesta máquina) e já deixa `origin` e a credencial de push " +
+    "prontas — sem precisar de nenhum passo manual depois. Chame esta tool ANTES de qualquer outra " +
+    "`code.*` pra esse projeto — as outras tools recebem o mesmo `project` (nome ou slug) que essa " +
+    "retorna. Baixo risco: cria uma pasta + um repositório VAZIO, nada destrutivo, nenhum código é " +
+    "enviado (isso é `git_push`, sempre alto risco, à parte).\n\n" +
+    "ESTE É O CAMINHO PADRÃO pra criar um site/projeto/app — use direto, SEM perguntar nada, sempre " +
+    "que o usuário não mencionar o Base44 pelo nome. Só use as tools `mcp__claude_ai_Base44__*` (app " +
+    'builder externo, requer conta premium) se o usuário pedir explicitamente por nome (ex.: "faz pelo ' +
+    'Base44", "cria no Base44").',
   {
     name: z.string().describe("nome do projeto (vira um slug: minúsculo, só letras/números/hífen)"),
   },
@@ -61,6 +71,7 @@ const createProjectTool = tool(
                 note: result.alreadyExisted
                   ? "Projeto já estava aberto nesta sessão — reaproveitado, nada recriado."
                   : "Projeto novo criado (pasta + git init + container isolado).",
+                github: result.github,
               },
               null,
               2
@@ -198,3 +209,4 @@ export const codeServer = createSdkMcpServer({
 
 export { stopAllProjects } from "./projects.js";
 export { saveProjectDeployKey } from "./git-credential.js";
+export { saveGithubToken } from "./github.js";

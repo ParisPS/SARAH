@@ -44,15 +44,20 @@ import { codeServer, stopAllProjects } from "@sarah/sandbox";
  * FASE 5, PARTE 2: mesmo tratamento pro conector nativo do Base44
  * (`mcp__claude_ai_Base44__*`) — DIFERENTE do Gmail nativo, este NÃO é
  * bloqueado (fica disponível de propósito, pra quem tem conta
- * premium), mas nunca é escolhido sozinho pelo agente: `code.*`
- * (sandbox local) e Base44 são dois caminhos igualmente válidos pra
- * "criar um site/projeto", e a escolha entre eles é sempre do usuário
- * (ver `BASE44_POLICY_TEXT`, injetada no `systemPrompt` de toda
- * chamada). Como cinto de segurança redundante, TODA tool do Base44 é
- * classificada alto risco (`FORCE_HIGH_RISK` em @sarah/permissions,
- * fora de `LOW_RISK_TOOLS`) e ganha um preview de confirmação que
- * deixa explícito que é um serviço pago — mesmo se o agente esquecer
- * de perguntar antes, o Gateway força a parada.
+ * premium), mas nunca é escolhido sozinho pelo agente. Como cinto de
+ * segurança redundante, TODA tool do Base44 é classificada alto risco
+ * (`FORCE_HIGH_RISK` em @sarah/permissions, fora de `LOW_RISK_TOOLS`)
+ * e ganha um preview de confirmação que deixa explícito que é um
+ * serviço pago — mesmo se o agente usar o Base44 sem o usuário ter
+ * pedido, o Gateway força a parada. Essa parte NÃO mudou na parte 3
+ * abaixo.
+ *
+ * FASE 5, PARTE 3: revoga a regra da parte 2 de sempre PERGUNTAR
+ * "Base44 ou local" antes de agir. `code.create_project` virou o
+ * caminho PADRÃO (cria pasta local + repositório no GitHub sozinho,
+ * sem fricção — ver `packages/sandbox/src/projects.ts`), usado direto
+ * sem perguntar nada; Base44 só entra se o usuário pedir por nome (ver
+ * `BASE44_POLICY_TEXT`, reescrita pra essa regra nova).
  *
  * FASE 4, PARTE 1: `confirm` (o "faz a pergunta e espera resposta" de
  * verdade — `readline.question("... (s/n) ")` no terminal, um dialog
@@ -238,26 +243,32 @@ async function formatConfirmationInput(toolName: string, toolInput: unknown): Pr
 }
 
 /**
- * Regra de desambiguação Base44 vs sandbox local (Fase 5, parte 2) —
- * injetada SEMPRE no `systemPrompt`, não deixada só na `description`
- * de cada tool (description influencia, mas não é garantida: o modelo
- * pode simplesmente decidir sozinho com base no pedido do usuário sem
- * reler a description com atenção). As duas ficam disponíveis de
- * propósito — Base44 não é bloqueado, viável pra quem tem conta
- * premium — mas a ESCOLHA entre as duas nunca é do agente: só o
- * usuário decide. O Gateway (`FORCE_HIGH_RISK` em @sarah/permissions)
- * é o cinto de segurança pro caso do agente esquecer isso; este texto
- * é a tentativa de fazer o comportamento certo acontecer sem precisar
- * chegar na confirmação.
+ * Regra de desambiguação Base44 vs sandbox local — Fase 5 parte 2
+ * introduziu isso como "sempre pergunta antes" (via AskUserQuestion);
+ * Fase 5 parte 3 REVOGOU essa regra por instrução explícita do
+ * usuário. Regra atual: `code.create_project` é o caminho PADRÃO,
+ * usado direto sem perguntar nada — desde a parte 3 ele também cria o
+ * repositório no GitHub sozinho (ver `packages/sandbox/src/projects.ts`,
+ * `setUpGithubRepo`), então não sobra motivo prático pra preferir
+ * Base44 por padrão. Base44 só entra em jogo se o usuário pedir por
+ * nome. Injetada SEMPRE no `systemPrompt` (não só na `description` de
+ * `create_project`) pelo mesmo motivo de antes: a description
+ * influencia mas não é garantida — o `systemPrompt` chega pro modelo
+ * em toda chamada, sem depender de releitura atenta no meio de um
+ * pedido mais longo. O Gateway (`FORCE_HIGH_RISK` em
+ * @sarah/permissions, inalterado) continua sendo o cinto de segurança
+ * pro caso do agente usar o Base44 sem o usuário ter pedido — mesmo
+ * assim, sempre exige confirmação explícita mencionando a conta
+ * premium.
  */
 const BASE44_POLICY_TEXT =
-  "Ao receber um pedido pra criar um site/projeto/app e o usuário AINDA NÃO disse qual caminho quer, " +
-  'pergunte explicitamente antes de agir (use a tool AskUserQuestion, com as opções "Base44" e "Local ' +
-  '(Claude Code)") — nunca decida sozinho entre `code.create_project` (sandbox local isolado, sem ' +
-  "custo, mas só roda no seu Mac) e as tools `mcp__claude_ai_Base44__*` (serviço externo que cria e " +
-  "hospeda o app, requer conta Base44 premium). Só chame uma das duas depois que o usuário escolher. " +
-  'Se o usuário já disse o caminho no próprio pedido (ex.: "usa o Base44", "cria localmente"), pode ' +
-  "seguir direto sem perguntar de novo.";
+  "Pra criar um site/projeto/app, o caminho PADRÃO é `code.create_project` — use direto, SEM perguntar " +
+  '"Base44 ou local", mesmo que o usuário não tenha especificado nada. Desde a Fase 5 parte 3, ' +
+  "`code.create_project` já cria a pasta local E um repositório novo no GitHub pra esse projeto " +
+  "automaticamente (sem fricção, sem pedir confirmação — isso é baixo risco). Só use as tools " +
+  "`mcp__claude_ai_Base44__*` (serviço externo, requer conta Base44 premium) se o usuário pedir POR " +
+  'NOME, explicitamente (ex.: "faz pelo Base44", "cria no Base44", "usa o Base44") — nunca por conta ' +
+  "própria, mesmo que pareça mais conveniente pra um pedido específico.";
 
 // Ver "bug real corrigido" no comentário do topo — caminho absoluto a
 // partir deste arquivo-fonte, não do `cwd` do processo que importou
