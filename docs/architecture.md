@@ -1557,6 +1557,185 @@ painel de menu bar) e depois GRAMPEIA dentro de `display.workArea`
 (`screen.getDisplayNearestPoint`) nos dois eixos — nunca nasce
 parcialmente fora da tela, em qualquer monitor.
 
+## Decisões e bugs encontrados na Fase 4, parte 4 (composição, espaçamento e animações contextuais)
+
+Pedido: mesmo mockup de referência da parte 3.5, mas com foco em três
+coisas diferentes — COMPOSIÇÃO (esfera dominante, painéis ao lado, não
+embaixo), ESPAÇAMENTO (cartões de verdade, não linhas coladas) e
+ANIMAÇÕES CONTEXTUAIS por categoria de tool. Nenhum dado novo — tudo
+que já existia (audit log, Gateway, memória) ficou intocado.
+
+### Composição: de "empilhado" pra "3 colunas com a esfera no centro"
+
+Antes: `#hologram-wrap` (fixo, 250px) em cima, `#dashboard` (grid 2x2)
+embaixo — a esfera era só mais um item no topo de uma lista vertical.
+Agora: uma única região `#top`, grid de 3 colunas
+(`210px 1fr 210px`), com um `.dash-col` (2 painéis empilhados, com
+`gap` real entre eles) de cada lado e o holograma (320px de altura,
+bem maior) centralizado no meio — a esfera passa a ser o elemento
+dominante da composição, como no mockup, não um item entre outros.
+
+Isso empurrou o tamanho da janela: 760x760 → **820x800**. Não é só
+"deixar mais bonito" — com painéis de 210px de largura, algumas
+métricas internas precisaram encolher pra caber sem quebrar feio: a
+legenda de risco virou coluna (`flex-direction: column`) em vez de
+lado a lado, e o rótulo de cada linha de "atividade por categoria"
+caiu de 108px pra 74px.
+
+### Espaçamento: painéis viram cartões de verdade
+
+Antes, `#dashboard` tinha `gap: 1px` com um fundo escuro por trás
+fazendo as "linhas" entre painéis — tecnicamente um grid, visualmente
+uma grade apertada. Agora cada `.panel` é um cartão independente:
+fundo em gradiente próprio (`linear-gradient`, levemente mais claro
+que o fundo geral), `border-radius: 14px`, borda sutil (`#16233d`),
+sombra (`box-shadow`) pra dar profundidade, e o espaçamento real entre
+cartões vem do `gap: 14px` do `.dash-col` que os contém — não mais
+frestas de 1px coladas.
+
+### Achado revalidando o item 3 do pedido: o gráfico de 24h já vinha zero-preenchido, mas a barra "zero" era invisível
+
+O pedido descreve o sintoma ("hoje só desenha barras onde existe dado,
+deixando buraco vazio") como se fosse um problema na AGREGAÇÃO dos
+dados. Conferindo `AuditLog.hourlyBuckets()` (`packages/audit`) antes
+de mexer em qualquer coisa: os dados JÁ vêm zero-preenchidos desde a
+parte 3.5 — as 24 horas sempre existem no array, nunca são omitidas.
+O bug real estava só na APRESENTAÇÃO: a barra de uma hora com
+`count: 0` tinha 1px de altura numa cor (`#10192c`) quase idêntica ao
+fundo do painel (`#070b14`/gradiente escuro) — na prática, invisível a
+olho nu, dando exatamente a impressão descrita ("buraco") mesmo com a
+coluna tecnicamente presente no SVG. Corrigido só na apresentação
+(`renderer/dashboard.js`): altura mínima maior (3px) e uma cor
+claramente mais clara que o fundo (`#26385c`) pras 24 colunas ficarem
+sempre visíveis como "barra baixa", nunca como vazio. Lição: quando o
+sintoma descrito bate com uma decisão que já foi tomada
+deliberadamente (aqui, zero-fill já existia e tinha até comentário
+explicando o porquê), vale conferir a camada de APRESENTAÇÃO antes de
+assumir que a camada de DADOS regrediu.
+
+### Animações contextuais por categoria de tool — três versões até a arquitetura final
+
+Este item passou por duas correções explícitas do usuário até chegar
+na versão que ficou. Registro das três, porque a diferença entre elas
+é a decisão de design mais importante deste item:
+
+1. **Primeira versão**: cada categoria animava um ÍCONE dentro do selo
+   de tool abaixo da mensagem (`.chip-icon`), com `memory.remember`
+   fazendo um NÓ ALEATÓRIO da superfície da esfera piscar.
+2. **Segunda versão** (1ª correção do usuário): só o `memory.remember`
+   mudou — o pulso saiu do nó aleatório e foi pro NÚCLEO CENTRAL fixo.
+   As outras categorias continuaram animando o ícone do selo.
+3. **Versão final** (2ª correção do usuário, esta): o entendimento
+   estava errado desde a primeira versão — a animação de TODAS as
+   categorias nunca deveria ter sido um ícone junto ao selo. É o
+   NÚCLEO CENTRAL da esfera que se transforma brevemente (~3s) pra
+   mostrar a animação da tarefa que acabou de rodar, e depois volta ao
+   estado normal (ocioso/pensando). O selo de tool continua existindo,
+   só que como sempre foi antes deste item: texto puro, sem ícone
+   animado nenhum — só registro ("🗓️ Apple Calendar · baixo risco").
+
+### Arquitetura final: fila de tarefas dentro do holograma + overlay 2D sincronizado
+
+`renderer/hologram.js` ganhou uma fila genérica (`playTask(category)` /
+`taskQueue` / `currentTask`) — TODA categoria relevante (não só
+`memory.remember` como na versão anterior) entra nela, e o próprio
+`animate()` garante que só uma toca por vez: quando uma termina
+(`TASK_DURATION = 3s`), a vaga libera e a próxima da fila só começa no
+frame seguinte. Chamar `playTask()` várias vezes em sequência rápida
+(ex.: duas tools na mesma resposta) empilha, nunca sobrepõe — validado
+de propósito pedindo pra SARAH criar um lembrete E lembrar de uma
+preferência na mesma mensagem (ver "Validação" abaixo).
+
+Enquanto uma tarefa está ativa, o NÚCLEO 3D em si reage — cresce um
+pouco além do seu pulso idle/thinking normal e ganha um halo (mesmo
+mecanismo de brilho aditivo já usado na versão anterior, generalizado
+pra qualquer categoria, não só memória). Isso sozinho já seria "o
+núcleo se transforma", mas pra tornar CADA categoria reconhecível (uma
+carta voando é visualmente diferente de um carimbo de calendário), um
+overlay 2D (`#core-task` em `index.html`, SVGs simples desenhados à
+mão — envelope, calendário+check, caneta+traço) fica posicionado
+exatamente sobre o centro do canvas (onde o núcleo 3D sempre está, já
+que ele vive na origem da cena com a câmera apontada pra lá) e mostra
+o glifo certo, sincronizado com a MESMA janela de 3s via os callbacks
+`onTaskStart`/`onTaskEnd` que `createHologram(canvas, callbacks)`
+agora aceita. Cor do glifo ajustada por pedido do usuário depois da
+primeira versão: PRETO (`#05070a`), não branco/azul-claro — o
+glow/halo do núcleo por baixo é claro e apagava qualquer glifo
+também claro; contraste extra contra o fundo escuro vem de duas
+`filter: drop-shadow(...)` claras empilhadas (contorno só onde o SVG
+tem traço, não uma cor de traço clara). `renderer.js` é
+quem decide, por categoria, se existe glifo (`TASK_GLYPHS`) — categorias
+sem entrada ali (hoje, só `"memory"`) não mostram overlay nenhum, só a
+reação do núcleo em si já é a resposta visual, exatamente como pedido
+("o núcleo pulsa/brilha mais forte — mesmo local, mesma duração").
+
+Categorias e seus glifos:
+
+- **Gmail `send_draft`** (`gmail-send`): envelope que "voa" pra fora
+  do núcleo (translada, rotaciona, desaparece) — a mais elaborada de
+  propósito, é a ação mais consequente do projeto.
+- **Apple Notes `create_note` / Apple Reminders `create_reminder`**
+  (`writing`, MESMA categoria pras duas): caneta com um wiggle curto +
+  um traço desenhado (`stroke-dasharray`/`stroke-dashoffset`
+  animando), simulando "algo sendo escrito".
+- **Apple Calendar/Notion Calendar `create_event`** (`calendar-stamp`):
+  ícone de calendário entra com overshoot elástico e um check é
+  "carimbado" por cima (mesmo mecanismo de `stroke-dashoffset`).
+- **`memory.remember`** (`memory`): SEM glifo — só a reação do núcleo
+  (cresce/brilha) já responde por essa categoria.
+
+`create_draft`/`reply_draft` (Gmail) e as tools de leitura (list_\*,
+get_message, recall) de propósito NÃO têm `sphereTask` — o usuário só
+listou 4 categorias desta vez (send_draft, notes/reminders create,
+calendar/notion create_event, memory.remember), então nenhuma outra
+tool ganhou reação no núcleo além dessas.
+
+Categorização por tool é feita em `TOOL_META` (`renderer/renderer.js`):
+uma lista de `{prefix, emoji, name, sphereTask}` onde o prefixo mais
+LONGO que bate com o `toolName` qualificado (`mcp__<server>__<tool>`)
+vence — permite ter uma entrada genérica pro server inteiro (sem
+`sphereTask`) e uma mais específica só pra uma tool exata (com
+`sphereTask`) na mesma lista, sem depender de ordem. Tool desconhecida
+cai no fallback `{emoji: "", name: toolName, sphereTask: null}` —
+nunca quebra, só não aciona nenhuma animação (mesmo princípio de
+fail-safe já usado em `classifyRisk`).
+
+A infraestrutura de cor-por-vértice da primeira versão (pra piscar um
+nó aleatório) e as `@keyframes` por-ícone-no-selo da versão anterior a
+esta foram REMOVIDAS por completo (não só desativadas) — nenhuma das
+duas tem mais propósito com a arquitetura final.
+
+### Validação de performance — quatro medições ao longo das versões (sem regressão real)
+
+Medido de novo a cada mudança estrutural, não só assumido como
+"desprezível" — mesma instrumentação de sempre (`console.log` de FPS
+no renderer, encaminhado pro stdout do processo principal via
+`webContents.on("console-message", ...)`, único jeito de validar isso
+nesta máquina sem permissão de Gravação de Tela). Leituras ao longo
+das três versões: 57.7fps (cor-por-vértice, depois de limpar
+processos órfãos que causaram uma leitura inicial de 17.9fps),
+55.6fps (núcleo + halo só pra memória), 58.3fps (arquitetura final,
+fila genérica + overlay 2D). Todas dentro da mesma faixa saudável de
+sempre (53-59fps) — nenhuma versão deste item introduziu regressão
+real; a fila/overlay novos não pesam mais que as versões anteriores.
+
+### Validação de dados e sequenciamento — protocolo testado direto (sem depender do clique do usuário)
+
+Antes de pedir confirmação visual, chamado `daemon.ask()` diretamente
+(via um gatilho temporário no processo principal, removido depois de
+cada teste). Pra validar especificamente a FILA (item explícito do
+pedido: "se duas tarefas acontecerem em sequência rápida, a segunda só
+começa depois que a primeira termina"), o pedido de teste foi
+desenhado pra causar DUAS tools com reação no núcleo na MESMA
+resposta: "cria um lembrete de teste pra ligar pro dentista e também
+lembre que eu prefiro reuniões de manhã". Resultado real:
+`tools[]` chegou com `mcp__sarah-apple-reminders__create_reminder`
+seguido de `mcp__sarah-memory__remember`, na mesma ordem em que o
+modelo as chamou — confirma que `renderer.js` enfileira as duas via
+`hologram.playTask()` na ordem certa, e que a fila dentro de
+`hologram.js` (não o renderer, não o daemon) é a única responsável por
+garantir que "writing" toca inteira antes de "memory" começar.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -1576,14 +1755,17 @@ parcialmente fora da tela, em qualquer monitor.
    real de um rascunho já existente, com confirmação melhorada
    mostrando o conteúdo legível). **(Fase 3 completa)**
 4. App de menu bar nativo substituindo o terminal; voz opcional.
-   **(Fase 4 completa até a parte 3.5: framework decidido — Electron
-   —, Gateway desacoplado de terminal, `@sarah/core` isolado num
-   daemon Node separado do Electron (ABI do `better-sqlite3`), Tray +
-   janela reais com confirmação via dialog nativo, dashboard com
-   holograma (referência visual seguida) + 4 painéis de dado REAL
-   (status de integrações, proporção de risco, atividade por
-   categoria/hora) — tudo validado rodando de verdade. Falta só a voz,
-   à parte.)**
+   **(Fase 4 completa até a parte 4: framework decidido — Electron —,
+   Gateway desacoplado de terminal, `@sarah/core` isolado num daemon
+   Node separado do Electron (ABI do `better-sqlite3`), Tray + janela
+   reais com confirmação via dialog nativo, dashboard com holograma
+   (referência visual seguida) + 4 painéis de dado REAL (status de
+   integrações, proporção de risco, atividade por categoria/hora),
+   composição em 3 colunas com a esfera centralizada/dominante,
+   painéis como cartões espaçados de verdade, e o NÚCLEO CENTRAL da
+   esfera se transformando brevemente (~3s, numa fila que nunca
+   sobrepõe duas animações) pra mostrar qual tarefa acabou de rodar —
+   tudo validado rodando de verdade. Falta só a voz, à parte.)**
 5. Agente de código: sandbox Docker por projeto, criação de projetos, git.
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
@@ -1596,7 +1778,7 @@ parcialmente fora da tela, em qualquer monitor.
 incluindo `send_draft`, validados rodando de verdade — detalhes na
 seção acima).
 
-**Fase 4 está completa até a parte 3.5** — resumo:
+**Fase 4 está completa até a parte 4** — resumo:
 
 - **Parte 1**: framework decidido (Electron, por não depender de
   compilação nativa local) + Gateway (`@sarah/permissions`)
@@ -1627,6 +1809,25 @@ seção acima).
   Performance revalidada com medição real de FPS em duas janelas de
   tempo (~54-59fps) — uma leitura anômala de 7fps investigada e
   atribuída a processos órfãos de testes anteriores, não a regressão.
+- **Parte 4**: composição mudou de "esfera em cima, painéis embaixo"
+  pra 3 colunas com a esfera centralizada/dominante e painéis dos dois
+  lados; cada painel virou um cartão de verdade (fundo próprio, cantos
+  arredondados, padding generoso, gap real); gráfico de 24h corrigido
+  (o zero-fill já existia desde a parte 3.5, mas a barra "zero" era
+  visualmente invisível — cor/altura ajustadas). O item de animações
+  contextuais passou por duas correções do usuário até a versão final:
+  não é mais um ícone animado no selo de tool (que volta a ser só
+  texto, como antes deste item) — é o NÚCLEO CENTRAL da esfera que se
+  transforma brevemente (~3s, fila própria dentro do holograma que
+  nunca sobrepõe duas animações) pra mostrar qual tarefa acabou de
+  rodar: envelope voando pro Gmail `send_draft`, caneta escrevendo pra
+  Notes/Reminders `create`, calendário carimbado pra Calendar/Notion
+  `create_event`, e o próprio núcleo brilhando/crescendo (sem glifo)
+  pra `memory.remember`. Janela cresceu de 760x760 pra 820x800.
+  Performance remedida a cada versão do item — mesma faixa saudável de
+  sempre em todas (53-59fps), sem regressão real (as leituras ruins
+  isoladas foram, de novo, processos órfãos de teste, não o código
+  novo).
 
 **Falta só a voz** — tratada desde o início como uma etapa
 independente da interface gráfica, ainda não iniciada.

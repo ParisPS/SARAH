@@ -29,15 +29,33 @@
         overflow: hidden;
       }
 
-      /* --- holograma: mais espaço ao redor, como a referência ------- */
-      #hologram-wrap {
-        position: relative;
-        height: 250px;
+      /* --- composição (Fase 4 parte 4): a esfera vira o elemento
+         dominante, CENTRALIZADA, com os painéis em DUAS COLUNAS ao
+         lado dela (não mais empilhados embaixo) — layout de 3 colunas
+         numa única região de "topo", seguindo o mockup de referência.
+         O brilho azul de fundo cobre a região inteira (esfera +
+         painéis), não só a esfera. -------------------------------- */
+      #top {
         flex-shrink: 0;
+        display: grid;
+        grid-template-columns: 210px 1fr 210px;
+        gap: 18px;
+        align-items: center;
+        padding: 22px 22px 18px;
         background:
-          radial-gradient(ellipse at center, rgba(60, 130, 246, 0.16) 0%, rgba(5, 7, 13, 0) 68%),
+          radial-gradient(ellipse at center, rgba(60, 130, 246, 0.18) 0%, rgba(5, 7, 13, 0) 72%),
           #05070d;
         border-bottom: 1px solid #10192c;
+      }
+      .dash-col {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-width: 0;
+      }
+      #hologram-wrap {
+        position: relative;
+        height: 320px;
       }
       #hologram {
         width: 100%;
@@ -46,8 +64,8 @@
       }
       #hologram-label {
         position: absolute;
-        left: 14px;
-        bottom: 10px;
+        left: 6px;
+        bottom: 4px;
         font-size: 11px;
         letter-spacing: 0.18em;
         text-transform: uppercase;
@@ -55,21 +73,19 @@
         pointer-events: none;
       }
 
-      /* --- painéis do dashboard ------------------------------------- */
-      #dashboard {
-        flex-shrink: 0;
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 1px;
-        background: #10192c;
-        border-bottom: 1px solid #10192c;
-      }
+      /* --- painéis do dashboard: cada um é um cartão de verdade ------
+         (fundo próprio, cantos arredondados, padding generoso, gap
+         real entre eles via `.dash-col` acima) — não mais linhas finas
+         encostadas umas nas outras. */
       .panel {
-        background: #070b14;
-        padding: 10px 12px;
+        background: linear-gradient(180deg, rgba(19, 31, 54, 0.8) 0%, rgba(9, 14, 25, 0.8) 100%);
+        border: 1px solid #16233d;
+        border-radius: 14px;
+        padding: 14px 15px;
+        box-shadow: 0 14px 30px -20px rgba(0, 0, 0, 0.75);
       }
       .panel h2 {
-        margin: 0 0 8px;
+        margin: 0 0 9px;
         font-size: 10px;
         text-transform: uppercase;
         letter-spacing: 0.1em;
@@ -124,7 +140,8 @@
       }
       .risk-legend {
         display: flex;
-        gap: 14px;
+        flex-direction: column;
+        gap: 4px;
         font-size: 11px;
         color: #9fb4d4;
       }
@@ -146,12 +163,12 @@
       .category-row {
         display: flex;
         align-items: center;
-        gap: 8px;
-        font-size: 11.5px;
+        gap: 6px;
+        font-size: 11px;
         margin-bottom: 5px;
       }
       .category-row .label {
-        width: 108px;
+        width: 74px;
         flex-shrink: 0;
         color: #9fb4d4;
         white-space: nowrap;
@@ -249,8 +266,188 @@
         flex-wrap: wrap;
         gap: 6px;
       }
+      .bubble .tools .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        animation: chip-fade-in 0.35s ease-out;
+      }
       .bubble .tools .chip.high {
         color: #f5b971;
+      }
+      .chip-icon {
+        display: inline-block;
+        font-size: 12px;
+        line-height: 1;
+        transform-origin: 50% 60%;
+      }
+
+      @keyframes chip-fade-in {
+        from {
+          opacity: 0;
+          transform: translateY(2px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      /* --- animação de tarefa no NÚCLEO da esfera (Fase 4 parte 4,
+         corrigido) ------------------------------------------------
+         Correção do usuário: a animação por categoria de tool NÃO
+         acontece no selo abaixo da mensagem (que continua só texto,
+         ver `.chip`/`.chip-icon` acima) — acontece centralizada sobre
+         o NÚCLEO da esfera holográfica. `#core-task` é um overlay 2D
+         posicionado exatamente sobre o centro do canvas (onde o
+         núcleo 3D sempre está, já que ele fica na origem da cena e a
+         câmera aponta pra lá) — a REAÇÃO do núcleo 3D em si (cresce/
+         brilha, ver `renderer/hologram.js`) acontece por baixo, ao
+         mesmo tempo, então a leitura é "o núcleo se transforma", não
+         "um ícone flutuando na frente dele". `renderer.js` decide
+         QUANDO trocar o conteúdo/classe daqui, via os callbacks
+         `onTaskStart`/`onTaskEnd` de `createHologram()` — nunca duas
+         animações ao mesmo tempo (a fila fica inteira dentro de
+         `hologram.js`, ver `playTask()`). */
+      #core-task {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        /* Preto, a pedido do usuário: o glow/núcleo por baixo é
+           branco/azul-claro e "apagava" qualquer glifo branco. Duas
+           `drop-shadow` claras empilhadas (em vez de uma cor de traço
+           clara) dão um contorno sutil só onde o SVG tem traço —
+           mantém o ícone legível tanto sobre o núcleo brilhante
+           quanto sobre o fundo escuro por trás dele. */
+        color: #05070a;
+        filter:
+          drop-shadow(0 0 2px rgba(234, 244, 255, 0.9))
+          drop-shadow(0 0 2px rgba(234, 244, 255, 0.9));
+      }
+      #core-task:empty {
+        display: none;
+      }
+
+      /* Gmail send_draft: envelope "voando" pra fora do núcleo — a
+         ação mais consequente do projeto, é a mais elaborada de
+         propósito. */
+      #core-task.core-task-gmail-send svg {
+        animation: core-task-send 3s ease-in-out;
+      }
+      @keyframes core-task-send {
+        0% {
+          opacity: 0;
+          transform: translate(-4px, 3px) scale(0.6) rotate(-6deg);
+        }
+        12% {
+          opacity: 1;
+          transform: translate(0, 0) scale(1) rotate(0deg);
+        }
+        55% {
+          opacity: 1;
+          transform: translate(0, 0) scale(1) rotate(0deg);
+        }
+        90% {
+          opacity: 0;
+          transform: translate(64px, -44px) scale(0.45) rotate(18deg);
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+
+      /* Apple Calendar / Notion Calendar create_event: "carimbo" de
+         check batendo no centro do núcleo. */
+      #core-task.core-task-calendar-stamp svg {
+        animation: core-task-stamp 3s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+      #core-task.core-task-calendar-stamp .core-task-check {
+        stroke-dasharray: 34;
+        stroke-dashoffset: 34;
+        animation: core-task-check-draw 1.1s ease-out 0.55s forwards;
+      }
+      @keyframes core-task-stamp {
+        0% {
+          opacity: 0;
+          transform: scale(2) translateY(-14px) rotate(-8deg);
+        }
+        16% {
+          opacity: 1;
+          transform: scale(0.92) translateY(1px) rotate(2deg);
+        }
+        26% {
+          transform: scale(1.05) rotate(-1deg);
+        }
+        34% {
+          transform: scale(1) rotate(0deg);
+        }
+        84% {
+          opacity: 1;
+          transform: scale(1) rotate(0deg);
+        }
+        100% {
+          opacity: 0;
+          transform: scale(1) rotate(0deg);
+        }
+      }
+      @keyframes core-task-check-draw {
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      /* Apple Notes / Apple Reminders (criar): traço de caneta
+         "escrevendo" no centro do núcleo. */
+      #core-task.core-task-writing svg {
+        animation: core-task-write-fade 3s ease-in-out;
+      }
+      #core-task.core-task-writing .core-task-pen {
+        transform-origin: 60% 60%;
+        animation: core-task-pen-wiggle 0.5s ease-in-out infinite;
+      }
+      #core-task.core-task-writing .core-task-stroke-line {
+        stroke-dasharray: 26;
+        stroke-dashoffset: 26;
+        animation: core-task-line-draw 1.6s ease-out 0.3s forwards;
+      }
+      @keyframes core-task-write-fade {
+        0% {
+          opacity: 0;
+          transform: translateY(4px) scale(0.85);
+        }
+        10% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        82% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+      @keyframes core-task-pen-wiggle {
+        0%,
+        100% {
+          transform: translate(0, 0) rotate(0deg);
+        }
+        25% {
+          transform: translate(-1px, 1px) rotate(-4deg);
+        }
+        50% {
+          transform: translate(1px, -1px) rotate(3deg);
+        }
+        75% {
+          transform: translate(-1px, 0) rotate(-2deg);
+        }
+      }
+      @keyframes core-task-line-draw {
+        to {
+          stroke-dashoffset: 0;
+        }
       }
 
       /* --- input -------------------------------------------------- */
@@ -286,27 +483,33 @@
     </style>
   </head>
   <body>
-    <div id="hologram-wrap">
-      <canvas id="hologram"></canvas>
-      <div id="hologram-label">SARAH</div>
-    </div>
+    <div id="top">
+      <div class="dash-col dash-col-left">
+        <div class="panel" id="panel-integrations">
+          <h2>Status das integrações</h2>
+          <div class="body"></div>
+        </div>
+        <div class="panel" id="panel-risk">
+          <h2>Proporção de risco</h2>
+          <div class="body"></div>
+        </div>
+      </div>
 
-    <div id="dashboard">
-      <div class="panel" id="panel-integrations">
-        <h2>Status das integrações</h2>
-        <div class="body"></div>
+      <div id="hologram-wrap">
+        <canvas id="hologram"></canvas>
+        <div id="core-task"></div>
+        <div id="hologram-label">SARAH</div>
       </div>
-      <div class="panel" id="panel-risk">
-        <h2>Proporção de risco</h2>
-        <div class="body"></div>
-      </div>
-      <div class="panel" id="panel-categories">
-        <h2>Atividade por categoria</h2>
-        <div class="body"></div>
-      </div>
-      <div class="panel" id="panel-activity">
-        <h2>Atividade recente (24h)</h2>
-        <div class="body"></div>
+
+      <div class="dash-col dash-col-right">
+        <div class="panel" id="panel-categories">
+          <h2>Atividade por categoria</h2>
+          <div class="body"></div>
+        </div>
+        <div class="panel" id="panel-activity">
+          <h2>Atividade recente (24h)</h2>
+          <div class="body"></div>
+        </div>
       </div>
     </div>
 

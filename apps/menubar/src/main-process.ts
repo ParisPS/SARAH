@@ -128,8 +128,12 @@ const confirmViaDialog: ConfirmFn = async (toolName, toolInput, preview) => {
 
 // Fase 4 parte 3.5: janela cresceu de 380x480 (só chat) pra caber o
 // dashboard (holograma maior + 4 painéis) sem espremer a conversa.
-const WINDOW_WIDTH = 760;
-const WINDOW_HEIGHT = 760;
+// Fase 4 parte 4: layout mudou de "esfera em cima, painéis embaixo"
+// pra 3 colunas lado a lado (painéis | esfera | painéis) — mais larga
+// (a esfera+painéis cabem numa faixa mais baixa) e um pouco mais alta
+// (cartões com padding generoso, não mais coladas).
+const WINDOW_WIDTH = 820;
+const WINDOW_HEIGHT = 800;
 
 function createWindow(): void {
   win = new BrowserWindow({

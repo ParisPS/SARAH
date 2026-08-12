@@ -34,9 +34,16 @@ function createDotTexture(size = 128) {
 
 /**
  * @param {HTMLCanvasElement} canvas
- * @returns {{ setState: (state: "idle" | "thinking") => void, setAudioLevel: (level: number) => void, dispose: () => void }}
+ * @param {{ onTaskStart?: (category: string) => void, onTaskEnd?: (category: string) => void }} [callbacks]
+ *   Chamados quando a fila de animações de tarefa (ver `playTask`)
+ *   troca de item — `renderer.js` usa isso pra sincronizar o overlay
+ *   2D (`#core-task`) com a reação do núcleo 3D feita aqui dentro.
+ *   Categorias sem overlay (ex.: `"memory"`) simplesmente não têm
+ *   glifo associado do lado do renderer — o núcleo reage sozinho.
+ * @returns {{ setState: (state: "idle" | "thinking") => void, setAudioLevel: (level: number) => void, playTask: (category: string) => void, dispose: () => void }}
  */
-export function createHologram(canvas) {
+export function createHologram(canvas, callbacks = {}) {
+  const { onTaskStart, onTaskEnd } = callbacks;
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
@@ -67,8 +74,9 @@ export function createHologram(canvas) {
   // de ponto suave, com leve variação de tamanho por vértice (dá
   // profundidade/organicidade, evita o visual "grade perfeita").
   const nodePositions = sphereGeometry.getAttribute("position");
-  const nodeSizes = new Float32Array(nodePositions.count);
-  for (let i = 0; i < nodePositions.count; i++) {
+  const nodeCount = nodePositions.count;
+  const nodeSizes = new Float32Array(nodeCount);
+  for (let i = 0; i < nodeCount; i++) {
     nodeSizes[i] = 0.06 + Math.random() * 0.03;
   }
   const nodeGeometry = new THREE.BufferGeometry();
@@ -101,12 +109,58 @@ export function createHologram(canvas) {
   core.renderOrder = 10;
   scene.add(core);
 
+  // Halo do núcleo (Fase 4 parte 4): fica INVISÍVEL em repouso
+  // (`opacity: 0`) — só aparece enquanto uma animação de tarefa está
+  // tocando (ver `playTask()`/fila abaixo), como um brilho extra que
+  // cresce ao redor do núcleo já existente. Reusa a mesma textura de
+  // ponto, atrás do núcleo (`renderOrder` menor) pra não tapar o
+  // ponto de luz central.
+  const coreGlowMaterial = new THREE.SpriteMaterial({
+    map: dotTexture,
+    color: COLOR_CORE,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+  });
+  const coreGlow = new THREE.Sprite(coreGlowMaterial);
+  coreGlow.scale.setScalar(0.55);
+  coreGlow.renderOrder = 9;
+  scene.add(coreGlow);
+
   // --- estado da animação ---------------------------------------
   let targetEnergy = 0;
   let energy = 0;
   let audioLevel = 0;
   const timer = new THREE.Timer(); // THREE.Clock está deprecated nesta versão
   let disposed = false;
+
+  // Fila de animações de TAREFA (Fase 4 parte 4, corrigido de novo por
+  // pedido do usuário: a versão anterior só cobria `memory.remember`,
+  // piscando o núcleo; agora TODA categoria — envio de e-mail,
+  // criação de nota/lembrete, criação de evento, memória — passa por
+  // esta mesma fila e reage no núcleo). `currentTask` guarda
+  // `{ category, start }` (start em segundos decorridos do `timer`)
+  // ou `null` se nada está tocando. `playTask()` só empurra pra
+  // `taskQueue`; `dequeueNextTask()` (chamado no topo de cada frame)
+  // é o único lugar que promove o próximo item — garante que duas
+  // tarefas NUNCA tocam sobrepostas, mesmo se `playTask()` for
+  // chamado várias vezes em sequência rápida (ex.: duas tools na
+  // mesma resposta). `onTaskStart`/`onTaskEnd` avisam `renderer.js`
+  // pra sincronizar o overlay 2D com a janela exata em que o núcleo
+  // está "reagindo" a essa tarefa.
+  const taskQueue = [];
+  let currentTask = null;
+  const TASK_DURATION = 3; // segundos — pedido explícito do usuário
+  let currentElapsed = 0;
+
+  function dequeueNextTask() {
+    if (currentTask === null && taskQueue.length > 0) {
+      const category = taskQueue.shift();
+      currentTask = { category, start: currentElapsed };
+      onTaskStart?.(category);
+    }
+  }
 
   // Checagem de performance (Fase 4 parte 3) — reporta o FPS medido
   // de verdade UMA VEZ, ~3s depois de começar a animar, via
@@ -138,6 +192,28 @@ export function createHologram(canvas) {
     timer.update();
     const dt = timer.getDelta();
     const t = timer.getElapsed();
+    currentElapsed = t;
+
+    dequeueNextTask();
+
+    // Fator da tarefa atual (0 = repouso, 1 = pico logo no início,
+    // decaindo linearmente até 0 em `TASK_DURATION`) — vale pra
+    // QUALQUER categoria enfileirada via `playTask()`, não só
+    // `memory.remember`. Quando termina, avisa `renderer.js`
+    // (`onTaskEnd`) e libera a vaga; a próxima da fila só entra no
+    // frame seguinte (`dequeueNextTask()` no topo do próximo
+    // `animate()`), gap de ~16ms, imperceptível.
+    let taskFactor = 0;
+    if (currentTask !== null) {
+      const age = t - currentTask.start;
+      if (age < TASK_DURATION) {
+        taskFactor = 1 - age / TASK_DURATION;
+      } else {
+        const finished = currentTask.category;
+        currentTask = null;
+        onTaskEnd?.(finished);
+      }
+    }
 
     // Suaviza a transição idle <-> thinking (metade do caminho a cada
     // ~0.3s, independente do frame rate).
@@ -157,9 +233,22 @@ export function createHologram(canvas) {
 
     // Núcleo: pulsa mais forte e cresce um pouco com energia/áudio —
     // é o parâmetro mais natural pra reagir a nível de áudio no
-    // futuro (um "flash" a cada pico de volume do TTS).
-    const coreScale = 0.5 + Math.sin(t * (2 + boost * 4)) * (0.05 + boost * 0.12) + boost * 0.15;
+    // futuro (um "flash" a cada pico de volume do TTS). Uma tarefa
+    // ativa soma um crescimento extra por cima disso — é isso que faz
+    // o núcleo genuinamente "se transformar" reagindo a QUALQUER
+    // categoria de tarefa, não só ganhar um ícone flutuando na frente
+    // dele (o glifo 2D de `renderer.js`/`index.html`, quando existe
+    // pra essa categoria, fica sincronizado com esta mesma janela via
+    // `onTaskStart`/`onTaskEnd`).
+    const coreScale = 0.5 + Math.sin(t * (2 + boost * 4)) * (0.05 + boost * 0.12) + boost * 0.15 + taskFactor * 0.35;
     core.scale.setScalar(coreScale);
+
+    // Halo do núcleo: invisível em repouso, aparece e cresce durante
+    // qualquer tarefa ativa — é o que lê visualmente como "aumento de
+    // brilho" (blending aditivo: uma área maior de luz sobre o fundo
+    // escuro), sem competir com o pulso idle/thinking do núcleo em si.
+    coreGlowMaterial.opacity = taskFactor * 0.85;
+    coreGlow.scale.setScalar(coreScale + taskFactor * 1.6);
 
     renderer.render(scene, camera);
 
@@ -181,6 +270,19 @@ export function createHologram(canvas) {
       // valor fora de [0,1] explodir a animação.
       audioLevel = Math.max(0, Math.min(1, level));
     },
+    /**
+     * Enfileira uma animação de tarefa pro núcleo central — toca por
+     * `TASK_DURATION` (~3s) assim que chegar a vez dela na fila
+     * (`dequeueNextTask()`), e SÓ ENTÃO a próxima começa (nunca
+     * sobrepostas, mesmo chamando `playTask()` várias vezes seguidas).
+     * `category` é uma string livre; `renderer.js` decide, via
+     * `onTaskStart`, se existe um glifo 2D pra ela (`"memory"`, por
+     * exemplo, não tem — só a reação do núcleo em si já é a resposta
+     * visual).
+     */
+    playTask(category) {
+      taskQueue.push(category);
+    },
     dispose() {
       disposed = true;
       resizeObserver.disconnect();
@@ -190,6 +292,7 @@ export function createHologram(canvas) {
       nodeGeometry.dispose();
       nodeMaterial.dispose();
       coreMaterial.dispose();
+      coreGlowMaterial.dispose();
       dotTexture.dispose();
       renderer.dispose();
     },

@@ -1,4 +1,4 @@
-# SARAH — Fases 0-4 (parte 3) completas
+# SARAH — Fases 0-4 completas (interface gráfica; voz adiada)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -91,32 +91,36 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   ["SENT", "INBOX"]` direto na API — chegou na caixa de entrada de
   verdade.
 
-## Fase 4 (partes 1-3.5) — interface gráfica (Electron), ao lado do terminal
+## Fase 4 — interface gráfica (Electron), voz adiada
 
-- `@sarah/core` refatorado: de um loop de terminal (`runSarah`) pra
-  `createSarahSession()`, reusável por qualquer interface —
-  `apps/cli` e `apps/menubar` chamam exatamente a mesma função
-  (Gateway/audit log/memória/tools MCP), só o "como recebo o próximo
-  pedido" muda entre um `readline` e eventos de IPC.
-  `@sarah/permissions` não tem mais `readline` preso dentro: recebe
-  um `confirm` injetado (dialog nativo no Electron, `(s/n)` no
-  terminal).
-- `apps/menubar`: ícone na barra de menu do macOS (Tray) que abre um
-  dashboard (760x760) com uma visualização holográfica central
-  (Three.js — esfera geodésica de nós+linhas+núcleo brilhante,
-  seguindo uma referência visual enviada pelo usuário) que substitui
-  qualquer indicador de texto tipo "digitando..." — anima mais
-  enquanto aguarda resposta, com um gancho (`setAudioLevel`) já pronto
-  pra reagir a volume de voz numa fase futura. Abaixo do holograma,
-  quatro painéis com dado REAL (nunca decorativo): status de cada
-  integração (config/permissão presente ou não), proporção de risco
-  baixo/alto, atividade por categoria e atividade por hora nas últimas
-  24h — todos lidos do mesmo audit log/config que o resto do projeto
-  já usa. Cada resposta do chat (que continua funcionando, abaixo dos
-  painéis) mostra um selo discreto de qual tool rodou e o risco. Um
-  painel de histórico à parte (janela separada, aberta pelo menu do
-  ícone) lista as últimas ações do Gateway sem precisar abrir
-  terminal/SQLite.
+- `apps/menubar`: segunda interface da SARAH — ícone na barra de menu
+  do macOS (Tray) que abre uma janela (820x800) com chat, uma
+  visualização holográfica central (Three.js, esfera geodésica azul)
+  e um dashboard, rodando LADO A LADO com o terminal (`apps/cli`), sem
+  substituí-lo — as duas interfaces continuam funcionando ao mesmo
+  tempo, compartilhando o mesmo `data/sarah.db`.
+- **Gateway desacoplado do terminal:** `@sarah/permissions` não tem
+  mais `readline` preso dentro — recebe um `confirm` INJETADO (dialog
+  nativo do macOS no Electron, `(s/n)` no terminal). `@sarah/core`
+  saiu de um loop de terminal (`runSarah`) e virou
+  `createSarahSession()`, reusável por qualquer interface — foi essa
+  refatoração que permitiu a segunda interface sem duplicar
+  Gateway/audit log/memória/tools MCP, só trocando "como chega o
+  próximo pedido" e "como se pede confirmação".
+- **Dashboard com dado REAL** (nunca decorativo), lido do mesmo audit
+  log/config que o resto do projeto já usa: status de cada integração
+  (config/permissão presente ou não), proporção de risco baixo/alto,
+  atividade por categoria, atividade por hora nas últimas 24h — quatro
+  painéis em formato de cartão, dos dois lados da esfera.
+- **Esfera central com animação contextual por tarefa:** anima mais
+  enquanto aguarda resposta (substitui qualquer indicador de texto
+  tipo "digitando..."), e o NÚCLEO no meio dela se TRANSFORMA
+  brevemente (~3s) sempre que uma tarefa relevante roda, indicando
+  qual foi: envelope voando pro envio de e-mail (Gmail `send_draft`),
+  caneta escrevendo pra Apple Notes/Reminders, calendário sendo
+  carimbado pro Calendar/Notion (`create_event`), e um pulso/brilho no
+  núcleo (sem símbolo) pra memória (`memory.remember`) — nunca duas
+  animações sobrepostas, numa fila própria dentro do holograma.
 - **Decisão mais importante:** `@sarah/core` roda num processo FILHO
   separado (Node normal do sistema, via `tsx`), não dentro do
   processo do Electron — `better-sqlite3` (usado pelo audit log e
@@ -125,22 +129,37 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   disponível. O processo do Electron fala com o daemon por JSON Lines
   via stdio; resolve esse caso e qualquer módulo nativo futuro com a
   mesma restrição.
+- **Voz (entrada e saída) fazia parte do escopo original desta fase e
+  foi DELIBERADAMENTE ADIADA** — não é algo esquecido, é uma decisão
+  de sequenciamento tomada no começo da fase (voz tratada como etapa
+  própria, independente da interface gráfica; ver roadmap em
+  `docs/architecture.md`). Por isso o título desta seção é "interface
+  completa, voz adiada": a Fase 4 não está 100% fechada no sentido do
+  escopo original, só a parte de interface está pronta. O holograma já
+  tem um gancho pronto (`setAudioLevel`) pra reagir a volume de voz
+  quando essa etapa começar.
 - **Validado:** terminal revalidado como idêntico depois da
   refatoração do Gateway; protocolo do daemon (tools, confirmação de
   alto risco, histórico, dashboard) testado isolado, sem Electron no
   meio — inclusive conferindo que os números do dashboard batiam
-  exatamente com o audit log real; performance da visualização medida
-  de verdade (~54-93fps em várias rodadas, encaminhando o console do
-  renderer pro terminal — sem permissão de Gravação de Tela nesta
-  máquina, essa foi a única forma de confirmar sem depender só de
-  olhar a tela); uso real extenso pelo usuário (Notion, Reminders,
-  Notes, Gmail, incluindo um `send_draft` confirmado pelo dialog
-  nativo) registrado no mesmo `data/sarah.db` compartilhado com o
-  terminal.
+  exatamente com o audit log real, e que o `toolName` de cada
+  categoria (Gmail/Calendar/Reminders/Notes/Memória) chega certo até o
+  renderer antes de qualquer clique manual; performance da
+  visualização medida de verdade a cada mudança estrutural (~53-59fps
+  em todas as rodadas), encaminhando o console do renderer pro
+  terminal — sem permissão de Gravação de Tela nesta máquina, essa foi
+  a única forma de confirmar sem depender só de olhar a tela; leituras
+  de FPS anomalamente baixas apareceram mais de uma vez e SEMPRE foram
+  rastreadas até processos Electron órfãos de testes anteriores
+  competindo por GPU, nunca uma regressão real do código; uso real
+  extenso pelo usuário (Notion, Reminders, Notes, Gmail, incluindo um
+  `send_draft` confirmado pelo dialog nativo) registrado no mesmo
+  `data/sarah.db` compartilhado com o terminal.
 
-**O que este código NÃO faz ainda (de propósito):** voz, agente de
-código/sandbox, GitHub, deploy de sites, memória semântica — ver o
-roadmap completo em `docs/architecture.md`.
+**O que este código NÃO faz ainda (de propósito):** voz (ver acima —
+Fase 4 mesmo, adiada, não esquecida), agente de código/sandbox,
+GitHub, deploy de sites, memória semântica — ver o roadmap completo em
+`docs/architecture.md`.
 
 ## Setup
 
@@ -193,14 +212,23 @@ verdade).
 
 **Fase 4**: rode `pnpm --filter menubar dev` — procure um ícone
 circular pequeno na barra de menu do macOS (tooltip "SARAH"). Clique
-pra abrir o dashboard: holograma no topo, quatro painéis (status das
-integrações, proporção de risco, atividade por categoria, atividade
-por hora) e a conversa embaixo. `me dê um ping com a mensagem oi` roda
+pra abrir o dashboard: a esfera holográfica GRANDE e centralizada, com
+dois painéis-cartão de cada lado (status das integrações e proporção
+de risco à esquerda; atividade por categoria e atividade por hora à
+direita) e a conversa embaixo. `me dê um ping com a mensagem oi` roda
 direto (o holograma anima mais forte enquanto espera, sem texto
 "pensando..."; os painéis de risco/categoria/atividade se atualizam
 sozinhos depois da resposta); `finja apagar o arquivo teste.txt` abre
 um dialog nativo do macOS (não dentro da janela) pedindo confirmação.
-Cada resposta mostra um selo discreto de qual tool rodou. Botão
+Cada resposta mostra um selo discreto de qual tool rodou (só texto);
+peça algo que crie um evento/lembrete/nota, ou que envie um e-mail
+(`send_draft`), e observe o NÚCLEO CENTRAL da esfera se transformar
+por ~3s — cresce/brilha e mostra um símbolo (envelope voando, caneta
+escrevendo, calendário carimbado) de acordo com a tarefa, depois volta
+ao normal; peça pra "lembrar" de algo (memória persistente) e o núcleo
+só brilha/cresce, sem símbolo. Se duas tarefas rodarem na mesma
+resposta, a segunda animação só começa depois que a primeira termina.
+Botão
 direito no ícone → "Histórico..." abre uma janela com as últimas ações
 do Gateway.
 

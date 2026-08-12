@@ -106,13 +106,22 @@ function renderActivity(container, hourlyActivity) {
   svg.setAttribute("preserveAspectRatio", "none");
 
   hourlyActivity.forEach((bucket, i) => {
-    const barHeight = bucket.count === 0 ? 1 : Math.max(2, (bucket.count / max) * (height - 4));
+    // Fase 4 parte 4 — achado revalidando o item 3 do pedido: os dados
+    // já vinham zero-preenchidos (`hourlyBuckets`, @sarah/audit) desde
+    // a parte 3.5, mas a barra "zero" tinha 1px de altura numa cor
+    // quase idêntica ao fundo do painel — na prática, ilegível/invisível,
+    // dando a impressão de "buraco" no gráfico mesmo com a coluna
+    // presente. Corrigido com altura mínima maior (3px) e uma cor
+    // claramente mais clara que o fundo, pra cada uma das 24 colunas
+    // ficar sempre visível como "uma barra baixa", nunca como um vazio.
+    const barHeight = bucket.count === 0 ? 3 : Math.max(3, (bucket.count / max) * (height - 4));
     const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
     rect.setAttribute("x", String(i * (barWidth + barGap)));
     rect.setAttribute("y", String(height - barHeight));
     rect.setAttribute("width", String(Math.max(1, barWidth)));
     rect.setAttribute("height", String(barHeight));
-    rect.setAttribute("fill", bucket.count === 0 ? "#10192c" : "#5fa8f5");
+    rect.setAttribute("rx", "0.75");
+    rect.setAttribute("fill", bucket.count === 0 ? "#26385c" : "#5fa8f5");
     const hour = new Date(bucket.hourStart);
     const label = document.createElementNS("http://www.w3.org/2000/svg", "title");
     label.textContent = `${hour.toLocaleString("pt-BR", { hour: "2-digit", day: "2-digit", month: "2-digit" })}h — ${bucket.count} ação(ões)`;
