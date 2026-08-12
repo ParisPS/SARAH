@@ -1736,6 +1736,355 @@ modelo as chamou — confirma que `renderer.js` enfileira as duas via
 `hologram.js` (não o renderer, não o daemon) é a única responsável por
 garantir que "writing" toca inteira antes de "memory" começar.
 
+## Decisões e bugs encontrados na Fase 5, parte 1 (fundação do sandbox de código)
+
+Primeira vez que a SARAH ganha capacidade de executar comandos e
+escrever arquivos livremente — por isso esta etapa é só a FUNDAÇÃO
+(verificar runtime + teste isolado + propor arquitetura), sem
+implementar nenhuma tool ainda, seguindo instrução explícita.
+
+### Achado real: nem Docker, nem "nada" — um meio-termo, mesma categoria do Xcode CLT na Fase 1
+
+Conferido antes de qualquer coisa, não assumido: `docker`/`orbstack`/
+`colima` não existem nesta máquina (nenhum binário no PATH, nenhum
+app em `/Applications`, nenhum cask/formula do Homebrew). Mas
+`podman` estava instalado via Homebrew (v5.0.1) — só que `podman
+machine list` não mostrava NENHUMA VM criada, e `podman info`
+confirmava explicitamente: `Cannot connect to Podman... try podman
+machine init`. Ou seja: o binário existe, mas não funciona de
+verdade — mesma categoria de achado da Fase 1 (Xcode CLT presente,
+não operacional), então a sessão PAROU aqui, sem rodar `podman
+machine init` sozinha, e perguntou ao usuário (via `AskUserQuestion`,
+4 opções: inicializar a VM do podman já instalado, Docker Desktop,
+OrbStack, Colima). Usuário escolheu inicializar a VM do podman
+(opção recomendada — menor fricção, CLI já presente, sem app GUI
+separado).
+
+`podman machine init` baixou a imagem de VM (`quay.io/podman/
+machine-os:5.0`, hypervisor nativo da Apple — `applehv`, arm64) e
+`podman machine start` subiu a VM com sucesso. `podman machine list`
+confirma os recursos default: 4 CPUs, 2GiB RAM, 100GiB de disco (a
+VM inteira, não por container — cada container consome desse total).
+
+### Teste mínimo isolado (mesmo padrão do teste do Electron na Fase 4)
+
+Antes de desenhar qualquer tool, validado que containers funcionam
+de verdade nesta máquina E que a garantia de isolamento é real, não
+assumida:
+
+1. `podman run --rm alpine:latest` — subiu, escreveu um arquivo
+   dentro do container, leu de volta, rodou `uname -a`/`whoami`
+   (Linux aarch64, root, dentro da VM), saiu. `podman ps -a` depois
+   confirma zero resíduo (`--rm` funciona).
+2. **Teste do isolamento em si** (o mais importante pro requisito de
+   segurança): montado um diretório de teste do host como `/workspace`
+   dentro do container (`-v <host>:/workspace:Z`), com `--network
+   none`. Dentro do container: `/workspace` mostra só o arquivo que
+   já existia lá (nada mais do Mac); um arquivo novo escrito em
+   `/workspace` de dentro do container aparece no HOST depois (mount
+   bidirecional funciona); `ls /Users` retorna `No such file or
+   directory` — o sistema de arquivos real do Mac **não existe**
+   dentro do container, não é só "sem permissão", é inacessível pela
+   própria configuração (sem volume nenhum apontando pra lá);
+   `wget` pra um domínio real falhou por falta de rede
+   (`--network none` bloqueia de verdade, não é decoração).
+3. **Limites de recurso**: `podman run --memory=256m --cpus=1 ...`
+   e conferido de DENTRO do container via cgroups
+   (`/sys/fs/cgroup/memory.max` = `268435456` bytes = 256MiB exato;
+   `/sys/fs/cgroup/cpu.max` = `100000 100000` = 1 CPU inteira) — os
+   limites são aplicados pelo kernel de verdade (cgroups v2 dentro da
+   VM), não uma flag decorativa.
+
+### Proposta de arquitetura (ainda não implementada — próxima etapa)
+
+**Ciclo de vida do container**: um container POR PROJETO (não por
+chamada de tool) — criado sob demanda na primeira operação daquele
+projeto e mantido rodando enquanto o projeto está "aberto" (cada tool
+subsequente usa `podman exec` nele, evitando o overhead de subir/
+derrubar container a cada comando/escrita), mas continua descartável
+no sentido que importa: destruído ao fechar/trocar de projeto, nunca
+reaproveitado entre projetos, sem estado escondido sobrevivendo além
+da pasta montada.
+
+**Onde a pasta do projeto mora no HOST**: fora do repositório da
+SARAH, de propósito — repetir o padrão de `packages/`/`data/` pra
+projetos de código recriaria exatamente o problema já registrado no
+`CLAUDE.md` ("Escopo do repositório git — cuidado": um repo git
+aninhado dentro de outro por engano). Proposta: uma pasta irmã de
+`Developer/jarvis`, ex. `~/SarahProjects/<slug-do-projeto>/`, cada uma
+com seu próprio `.git` — nunca dentro da árvore deste repositório.
+
+**Tools propostas** (nomes/formato, sujeitos a ajuste na próxima
+etapa): `code.create_project(name)` (cria a pasta no host + `git
+init` + sobe o container do projeto), `code.write_file(project, path,
+content)` (path relativo a `/workspace`, nunca absoluto/fora dele),
+`code.run_command(project, command)` (via `podman exec`, com timeout),
+`code.git_commit(project, message)`, `code.git_push(project, remote,
+branch, force?)` e `code.preview(project)` (sobe um dev server dentro
+do container com port-forward explícito pro host, única porta de
+entrada que existe).
+
+**Risco**: `create_project`/`write_file`/`run_command`/`git_commit`
+propostas como BAIXO risco — a garantia de segurança é o isolamento
+do container em si (validado acima: sem acesso ao Mac real, sem rede
+por padrão), não confirmação a cada linha de código escrita.
+`git_push`/`git_push --force` continuam SEMPRE alto risco, sem
+exceção — decisão já tomada desde o início do projeto, não muda aqui.
+
+**Rede/recursos do container**: saída (outbound) liberada por padrão
+— sem isso `npm install`/`git push`/`git clone` não funcionam, o que
+inviabilizaria o propósito da ferramenta — mas SEM nenhuma porta de
+ENTRADA exposta por padrão; só `code.preview` abre uma porta
+específica, e só quando chamada. CPU/memória limitados por container
+(`--memory`/`--cpus`, confirmado funcionando de verdade acima) com
+valores default conservadores, ajustáveis por projeto se necessário.
+Filesystem: SÓ a pasta daquele projeto montada (nunca o `$HOME` nem
+qualquer outro caminho do Mac) — essa garantia vem da configuração do
+`podman run`/`exec` (nenhum outro volume é montado), não de qualquer
+checagem em nível de aplicação que pudesse ter um bug.
+
+**Escopo desta etapa**: só isso — verificação do runtime, teste
+isolado, e esta proposta. Nenhuma tool nova foi registrada em
+`@sarah/core` ainda; isso fica pro próximo prompt, depois que a
+fundação acima for confirmada.
+
+## Decisões e bugs encontrados na Fase 5, parte 1 (b) — as três perguntas em aberto + implementação das tools
+
+Depois da fundação acima, o usuário levantou três perguntas concretas
+antes de liberar a implementação de verdade. As três foram resolvidas
+TESTANDO, não só decidindo no papel — e duas delas revelaram bugs reais
+que só apareceram rodando de verdade, não em revisão de código.
+
+### 1. Ciclo de vida do container — dois gatilhos, não um
+
+Decisão: um container por projeto, criado sob demanda na primeira
+`code.*` chamada e mantido rodando enquanto o projeto está "aberto"
+(chamadas seguintes usam `podman exec`, evitando o custo de recriar
+container a cada comando). Encerrado por:
+
+1. **Fim da sessão da SARAH** — `SarahSession.close()` (`@sarah/core`)
+   agora também chama `stopAllProjects()`, no mesmo lugar que já fecha
+   o audit log e a memória. `close()` virou `async` por causa disso
+   (parar um container de verdade não é instantâneo); `apps/cli` e
+   `apps/menubar/src/daemon.ts` foram ajustados pra `await` isso antes
+   de `process.exit()`.
+2. **Inatividade** — nenhuma chamada `code.*` pra um projeto por 30
+   minutos (`IDLE_TIMEOUT_MS`) derruba o container sozinho (checado a
+   cada 5 minutos, `setInterval` com `.unref()` — não impede o
+   processo de encerrar por conta própria). Existe pra sessões muito
+   longas (o daemon do `apps/menubar` pode ficar de pé por dias) não
+   acumularem containers reservando CPU/memória se o usuário esquecer
+   um projeto aberto.
+
+Um container nunca é reaproveitado entre projetos diferentes — nome
+fixo `sarah-proj-<slug>`, `--rm` garante que parar também remove.
+
+### 2. Credencial de `git push` — testado e descartado o caminho óbvio
+
+A sugestão natural (encaminhar o `ssh-agent` do usuário pro container,
+reaproveitando a config já existente) foi TESTADA e não funciona nesta
+máquina, por dois motivos concretos, não teóricos:
+
+- `SSH_AUTH_SOCK` do macOS aponta pra `/var/run/com.apple.launchd.*` —
+  fora de qualquer caminho compartilhado por padrão entre o Mac e a VM
+  do podman (só `/Users`, `/private` e `/var/folders` são
+  compartilhados via virtiofs, confirmado com `podman machine ssh --
+  mount`).
+- Mesmo que estivesse num caminho compartilhado, sockets Unix não
+  atravessam esse tipo de compartilhamento de arquivo entre kernels
+  diferentes (macOS vs. Linux da VM) — limitação conhecida desse tipo
+  de virtualização, não um detalhe de configuração corrigível.
+
+Decisão adotada (`packages/sandbox/src/git-credential.ts`): mesmo
+padrão já usado pro refresh token do Gmail — uma credencial de deploy
+POR PROJETO (não a identidade pessoal inteira do usuário) no Keychain
+do macOS, lida pelo DAEMON (nunca pelo container) e escrita dentro do
+container só no instante do `git_push`, num arquivo temporário na área
+efêmera do container (nunca na pasta do projeto persistida no Mac),
+apagado logo depois. Escopo por projeto é deliberado: uma chave
+vazada limita o dano a UM repositório, não à conta inteira. Nenhuma
+chave foi configurada nesta etapa — `git_push` recusa com mensagem
+clara (`"Nenhuma credencial de git configurada..."`) se nada existir
+no Keychain pra aquele projeto, testado de verdade (não só o caminho
+feliz).
+
+### 3. Escopo de rede — a parte mais difícil desta fase, três becos sem saída até funcionar
+
+Pedido: container alcança internet, mas NÃO a rede local do Mac (outros
+dispositivos na mesma LAN). Testado PRIMEIRO se isso já não seria o
+caso por padrão — não era: um container na rede default do podman
+conseguia abrir uma conexão TCP direto pro gateway da LAN
+(`192.168.15.1:80`), confirmado com `nc` de dentro do container.
+Precisou de três tentativas até achar o mecanismo certo:
+
+1. **Regra `nft` no namespace de rede RAIZ da VM** (via `podman
+   machine ssh`, sem `nsenter`) — sem efeito nenhum. Causa: o podman
+   roda em modo ROOTLESS nesta VM, e o tráfego de CADA container passa
+   por um network namespace PRÓPRIO daquele container (gerenciado por
+   `pasta`), não pelo namespace raiz que `podman machine ssh` acessa
+   por padrão. `nft list ruleset`/`iptables-save` no namespace raiz
+   mostravam vazio mesmo com containers ativos — sinal de que o NAT de
+   verdade acontece em outro lugar (gvproxy, na camada de rede da VM
+   pro host, fora do netfilter do namespace raiz da VM).
+2. **Tentativa de achar o "rootless netns" compartilhado** (o caminho
+   de bind-mount que o `pasta` recebe como argumento `--netns`) — o
+   `nsenter` pro caminho do arquivo falhava ("Invalid argument"), e
+   entrar pelo PID do processo `pasta` mostrava as MESMAS interfaces
+   do namespace raiz da VM (`pasta` conecta a esse namespace, não vive
+   dentro dele o tempo todo).
+3. **O que funciona**: `nsenter -t <PID> -n`, usando o PID do PRÓPRIO
+   PROCESSO DO CONTAINER (`podman inspect <nome> --format
+   '{{.State.Pid}}'`, confirmado que é o mesmo PID visto do Mac e de
+   dentro da VM) — cada container tem seu PRÓPRIO netns individual (é
+   assim que isolamento de container funciona, independente de
+   rootless/rootful), e é ALI que a regra precisa entrar. Regra final,
+   aplicada na cadeia `output` desse namespace específico: libera
+   `10.89.0.0/16` (a própria subnet do sandbox — necessário pro DNS/
+   gateway, que fica em `10.89.0.1`, dentro da faixa RFC1918
+   `10.0.0.0/8` que seria bloqueada senão) e derruba
+   `10.0.0.0/8`/`172.16.0.0/12`/`192.168.0.0/16`/`169.254.0.0/16`
+   (toda a LAN de verdade). Internet continua liberada — a chain tem
+   `policy accept`, só os destinos privados têm regra `drop` explícita.
+
+**Validação de que a garantia é REAL, não decorativa** (o requisito
+não-negociável do pedido: "impossível pela configuração, não apenas
+desencorajada"): de dentro do próprio container, sem
+`--cap-add=NET_ADMIN` nenhum concedido, foi instalado o pacote
+`nftables` via `apk` (funciona — é tráfego de internet, não bloqueado)
+e tentado `nft flush ruleset` — falhou com `"Operation not permitted"`.
+Inspecionado `/proc/self/status` de dentro do container confirma:
+`CapEff`/`CapPrm`/`CapBnd` não têm o bit de `CAP_NET_ADMIN` (bit 12) —
+nem no conjunto BOUNDING, ou seja, o processo não pode nunca reaver
+essa capacidade por nenhum meio (setcap, exec de binário suid etc.). A
+regra sobreviveu intacta depois da tentativa, confirmado do lado de
+fora (VM). O kernel recusa a chamada — não depende do container "se
+comportar".
+
+### Bug real #1 encontrado na validação: limpeza de container órfão matava sessão de OUTRO processo ainda vivo
+
+A primeira versão de `cleanupOrphanedContainers()` (chamada uma vez no
+início de cada sessão) apagava QUALQUER container `sarah-proj-*`
+encontrado, sem checar se ainda pertencia a um processo VIVO. Isso
+NUNCA foi testado com dois processos simultâneos até essa validação —
+e o projeto suporta de propósito rodar `apps/cli` e `apps/menubar` ao
+mesmo tempo (Fase 4). Reproduzido de verdade: um script criou um
+projeto e ficou de pé (simulando um daemon real); um SEGUNDO script
+(processo Node diferente) chamou `create_project` de novo — e sua
+própria rotina de limpeza de órfãos matou o container do primeiro
+processo, que ainda estava rodando o preview do usuário.
+
+Corrigido (`packages/sandbox/src/podman.ts`): todo container de
+projeto agora nasce com um label `sarah.owner-pid=<PID de quem criou>`.
+`isOwnerAlive()` confere `process.kill(pid, 0)` (não manda sinal
+nenhum, só pergunta ao kernel se o PID existe) antes de considerar um
+container órfão — `cleanupOrphanedContainers()` e a checagem no início
+de `createProjectContainer()` (que também tentava recriar um container
+pré-existente sem essa checagem) só removem containers cujo dono
+comprovadamente não existe mais. Se outro processo da SARAH ainda tem
+aquele projeto aberto, a tentativa de abrir o mesmo projeto aqui falha
+com uma mensagem clara em vez de derrubar a sessão alheia.
+
+### Bug real #2 encontrado na validação: `:Z` (relabeling SELinux) quebra ao reabrir um projeto que já tem commits
+
+A VM (Fedora CoreOS) roda SELinux em modo `Enforcing` (confirmado com
+`getenforce`) — sem NENHUM tratamento de SELinux, o container recebe
+"Permission denied" só de tentar LER `/workspace` (o mount funciona,
+é o contexto de segurança que barra o acesso). A opção padrão pra
+isso, `:Z` no volume (relabeling automático, exclusivo daquele
+container), funciona na PRIMEIRA vez que um projeto é criado — mas
+QUEBRA ao tentar recriar o container de um projeto que já tem um
+commit: falha com `lsetxattr .../objects/.../permission denied`.
+Causa: git grava objetos como somente-leitura (modo 0444 — comportamento
+normal, não um bug do git), e a relabeling do `:Z` precisa de
+permissão de ESCRITA no arquivo pra conseguir setar o xattr de
+SELinux, permissão que um arquivo 0444 não dá nem pro próprio dono.
+Reproduzido de propósito (criar projeto → commit → matar o processo
+dono → reabrir o mesmo projeto) antes de aceitar como corrigido — e o
+mesmo teste, depois da correção, funcionou (git log mostrou o commit
+antigo intacto).
+
+Corrigido: `--security-opt label=disable` no `podman run`, no lugar de
+`:Z` — desliga a aplicação de SELinux especificamente pra este
+container, sem tocar em nenhuma das outras garantias de isolamento
+(rede, filesystem só a pasta montada, capacidades, limites de
+recurso), todas revalidadas de novo DEPOIS dessa mudança pra confirmar
+que continuam intactas (ver "Validação final" abaixo). SELinux aqui
+protegeria contra um container malicioso mexendo em OUTROS containers/
+processos da MESMA VM — não é o modelo de ameaça relevante numa VM de
+uso único, dedicada só aos sandboxes da própria SARAH (diferente de,
+por exemplo, um host multi-tenant compartilhado).
+
+### Tools implementadas (`@sarah/sandbox`, MCP server `sarah-code`)
+
+`code.create_project`, `code.write_file` (escreve DIRETO no host, não
+via `podman exec` — `/workspace` é literalmente a pasta do projeto
+montada, então os dois lados dão o mesmo resultado, sem o overhead de
+entrar no container só pra um `cat > arquivo`; caminho validado duas
+vezes contra `..`/absoluto pra nunca escrever fora da pasta do
+projeto), `code.run_command` (via `podman exec sh -c`, com timeout),
+`code.git_commit` (passa `-m`/mensagem como argv separado, NUNCA
+interpolado numa string de shell — evita que `$(...)`/crase na
+mensagem seja interpretado como comando), `code.git_push` (formatação
+de confirmação própria em `packages/core` mostrando remote/branch/
+force antes de pedir "sim/não" — mesmo padrão do `send_draft` do
+Gmail) e `code.preview` (`podman exec -d`, porta 3000 do container
+publicada só em `127.0.0.1` do Mac — nunca `0.0.0.0` — com um poll de
+até ~12s checando se o servidor já responde antes de devolver a URL,
+em vez de simplesmente confiar que o comando funcionou). Imagem base:
+`node:20-alpine` (`git`/`openssh-client` instalados uma vez na criação
+do container, não a cada comando).
+
+Risco: as cinco primeiras entraram em `LOW_RISK_TOOLS`
+(`@sarah/permissions`) — a garantia de segurança é o isolamento do
+container, confirmação por linha não acrescentaria nada.
+`git_push`/`--force` ficam de fora de propósito, SEMPRE alto risco,
+sem exceção — regra que não mudou desde a primeira mensagem deste
+projeto, nem "dentro" do sandbox.
+
+### Validação final — ciclo completo, de verdade, incluindo o reinício de sessão
+
+Um projeto de teste real (`site-de-teste-sarah`) passou pelo ciclo
+inteiro: `create_project` → `write_file` (um `index.html`) →
+`run_command` (`ls`/`node --version`/`git --version`, confirmando o
+container de verdade) → `git_commit` (commit real, confirmado com
+`git log`) → `preview` (`npx --yes serve`, instalado via internet de
+dentro do container). A URL do preview foi conferida de FORA do
+sandbox — `curl` direto do Mac, não de dentro do container —
+retornando o HTML esperado com `http_code=200`.
+
+Também validado o CENÁRIO DE REINÍCIO (matar o processo "dono" e
+reabrir o mesmo projeto), que foi exatamente o que revelou os dois
+bugs acima: depois de corrigidos, reabrir o projeto recria o container
+sem erro, e o histórico git (commit de antes) continua intacto —
+prova de que a persistência real está na pasta montada no Mac, não no
+container em si (que é genuinely descartável).
+
+Isolamento reconferido no container FINAL (depois de `--security-opt
+label=disable`, pra garantir que essa mudança não afetou nenhuma das
+outras garantias): `/Users` continua inacessível, LAN continua
+bloqueada (`nc` pro gateway trava até dar timeout), internet continua
+liberada, e `CAP_NET_ADMIN` continua ausente do processo do container
+(`CapEff` sem o bit 12).
+
+Também testado, real de verdade e via o AGENTE (não chamando as
+funções diretamente): um prompt pedindo pra criar um projeto, escrever
+um arquivo e rodar um comando — as três tools rodaram como
+`auto-allow` (baixo risco, sem confirmação nenhuma pedida), registradas
+no mesmo `data/sarah.db` de sempre, com o `input` exato de cada
+chamada — confirma que a classificação de risco e o registro MCP
+funcionam do jeito esperado através do caminho real (Gateway + audit
+log), não só via chamada direta de função.
+
+`git_push` NÃO foi testado contra um repositório remoto real, por
+instrução explícita do usuário — só confirmado que a recusa por falta
+de credencial funciona (`getProjectDeployKey` retorna `null` pra um
+projeto sem chave configurada no Keychain).
+
+**Confirmado pelo usuário**, visualmente, no navegador de verdade: o
+preview do site de teste (`http://127.0.0.1:<porta>`) abriu e mostrou
+o conteúdo esperado — validação end-to-end fechada, do prompt até o
+navegador.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -1766,7 +2115,22 @@ garantir que "writing" toca inteira antes de "memory" começar.
    esfera se transformando brevemente (~3s, numa fila que nunca
    sobrepõe duas animações) pra mostrar qual tarefa acabou de rodar —
    tudo validado rodando de verdade. Falta só a voz, à parte.)**
-5. Agente de código: sandbox Docker por projeto, criação de projetos, git.
+5. Agente de código: sandbox por projeto, criação de projetos, git.
+   **(Fase 5 parte 1 completa: runtime verificado — podman, VM
+   inicializada, `docker`/OrbStack/Colima ausentes nesta máquina —
+   ciclo de vida do container decidido (sessão + timeout de
+   inatividade), credencial de `git_push` resolvida via Keychain por
+   projeto (ssh-agent forwarding testado e descartado — não funciona
+   nesta configuração), rede local bloqueada de verdade (nftables no
+   netns do próprio container, validado que o container não consegue
+   desfazer) mantendo internet liberada. `@sarah/sandbox` implementado
+   e registrado em `@sarah/core`: `code.create_project/write_file/
+   run_command/git_commit/git_push/preview`. Validado de ponta a ponta
+   com um projeto real — site estático, commit real, preview
+   respondendo via `curl` externo — incluindo o cenário de reiniciar a
+   sessão (dois bugs reais encontrados e corrigidos nesse teste:
+   limpeza de container órfão matando sessão alheia ainda viva, e
+   relabeling SELinux quebrando ao reabrir projeto com commits).)**
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
    nuance no risco médio.
@@ -1831,3 +2195,29 @@ seção acima).
 
 **Falta só a voz** — tratada desde o início como uma etapa
 independente da interface gráfica, ainda não iniciada.
+
+**Fase 5, parte 1 está completa** (sandbox de código, fundação +
+implementação): `docker`/OrbStack/Colima ausentes nesta máquina,
+`podman` presente mas com VM não inicializada — parado e perguntado ao
+usuário antes de inicializar (mesma cautela do Xcode CLT na Fase 1);
+usuário escolheu inicializar a VM do podman. Depois de validar o
+runtime, três perguntas em aberto foram resolvidas TESTANDO (não só
+decidindo): ciclo de vida do container (sessão + timeout de 30min de
+inatividade), credencial de `git_push` (Keychain por projeto — ssh-
+agent forwarding testado e confirmado que NÃO funciona nesta VM), e
+bloqueio de rede local mantendo internet (nftables aplicado no netns
+do próprio container, de fora dele — confirmado que o container não
+consegue desfazer, falta `CAP_NET_ADMIN` até no conjunto bounding).
+`@sarah/sandbox` implementado com as 6 tools propostas
+(`create_project/write_file/run_command/git_commit/git_push/preview`)
+e registrado em `@sarah/core`. Validado de ponta a ponta com um
+projeto real (site estático — escrita, comando, commit real, preview
+respondendo via `curl` externo ao sandbox) — incluindo o cenário de
+reiniciar a sessão, que revelou e permitiu corrigir dois bugs reais:
+limpeza de container órfão matando a sessão de OUTRO processo ainda
+vivo (corrigido com um label de PID dono + checagem de liveness), e
+relabeling SELinux (`:Z`) quebrando ao reabrir um projeto que já tem
+commits git (corrigido com `--security-opt label=disable`, sem afetar
+nenhuma das outras garantias de isolamento, revalidadas depois da
+mudança). `git_push` não foi testado contra um remoto real, por
+instrução explícita — só a recusa por falta de credencial.

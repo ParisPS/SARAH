@@ -68,6 +68,25 @@ const LOW_RISK_TOOLS = new Set<string>([
   // nem sobrescreve nenhuma nota existente).
   "mcp__sarah-apple-notes__list_notes",
   "mcp__sarah-apple-notes__create_note",
+  // Sandbox de código (Fase 5, parte 1): a garantia de segurança destas
+  // cinco tools vem do ISOLAMENTO DO CONTAINER em si — validado de
+  // verdade (ver docs/architecture.md) que o container não enxerga o
+  // filesystem real do Mac fora da pasta do projeto, não alcança a
+  // rede local (só internet), e tem limites reais de CPU/memória.
+  // Confirmar por linha de comando/arquivo escrito não acrescentaria
+  // segurança nenhuma a isso — por isso todas entram como baixo risco,
+  // igual às outras integrações aditivas/reversíveis.
+  "mcp__sarah-code__create_project",
+  "mcp__sarah-code__write_file",
+  "mcp__sarah-code__run_command",
+  "mcp__sarah-code__git_commit",
+  "mcp__sarah-code__preview",
+  // `mcp__sarah-code__git_push` fica DE FORA de propósito — SEMPRE
+  // alto risco, sem exceção, mesmo dentro do sandbox. Regra definida
+  // desde a primeira mensagem deste projeto: git push/--force nunca é
+  // baixo risco, ponto final. Ver formatConfirmationInput em
+  // packages/core pro preview (remote/branch/force) mostrado antes da
+  // confirmação.
 ]);
 
 export function classifyRisk(toolName: string): RiskLevel {

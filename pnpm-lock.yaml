@@ -123,6 +123,9 @@ importers:
       '@sarah/permissions':
         specifier: workspace:*
         version: link:../permissions
+      '@sarah/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
 
   packages/fixtures:
     dependencies:
@@ -172,6 +175,15 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.200
         version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(zod@4.4.3)
+
+  packages/sandbox:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.3.200
+        version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
 
 packages:
 

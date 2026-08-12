@@ -131,8 +131,12 @@ rl.on("line", (line) => {
 
 send({ type: "ready" });
 
-function shutdown(): void {
-  session.close();
+// Fase 5: `close()` virou async (precisa esperar containers de projeto
+// pararem de verdade, não só o SQLite) — `shutdown()` espera antes de
+// `process.exit`, senão um container de projeto podia ficar órfão se o
+// processo morresse no meio do `podman stop`.
+async function shutdown(): Promise<void> {
+  await session.close();
   process.exit(0);
 }
 

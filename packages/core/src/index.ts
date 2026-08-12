@@ -10,6 +10,7 @@ import { appleRemindersServer, checkRemindersStatus } from "@sarah/apple-reminde
 import { gmailServer, getDraftPreview, checkGmailStatus } from "@sarah/gmail";
 import { createMemoryServer } from "@sarah/memory";
 import { appleNotesServer, checkNotesStatus } from "@sarah/apple-notes";
+import { codeServer, stopAllProjects } from "@sarah/sandbox";
 
 /**
  * Núcleo do agente: monta o Gateway de permissões, o audit log, a
@@ -136,28 +137,45 @@ const BUILTIN_TOOLS_TO_BLOCK = [
 
 /**
  * Formatador de confirmação pro Gateway (ver `FormatConfirmationInput`
- * em @sarah/permissions) — só a tool `send_draft` tem tratamento
- * especial hoje: é a ação de maior consequência real do projeto até
- * agora (a única de e-mail verdadeiramente irreversível), então busca
- * o conteúdo do rascunho ANTES de pedir confirmação e mostra de forma
- * legível (Para/Assunto/corpo), em vez do `draftId` cru em JSON. Erro
- * ao buscar (ex.: rascunho já apagado) cai pro fallback padrão do
- * Gateway — não bloqueia a confirmação em si, só perde o preview
- * bonito nesse caso raro.
+ * em @sarah/permissions) — `send_draft` (Gmail) e `git_push` (Fase 5,
+ * sandbox de código) têm tratamento especial: as duas ações
+ * verdadeiramente irreversíveis deste projeto até agora, então mostram
+ * o que vai acontecer de forma legível ANTES de pedir confirmação, em
+ * vez do input cru em JSON. Erro ao formatar (ex.: rascunho já
+ * apagado) cai pro fallback padrão do Gateway — não bloqueia a
+ * confirmação em si, só perde o preview bonito nesse caso raro.
  */
 async function formatConfirmationInput(toolName: string, toolInput: unknown): Promise<string | null> {
-  if (toolName !== "mcp__sarah-gmail__send_draft") return null;
+  if (toolName === "mcp__sarah-gmail__send_draft") {
+    const { draftId } = toolInput as { draftId?: string };
+    if (!draftId) return null;
 
-  const { draftId } = toolInput as { draftId?: string };
-  if (!draftId) return null;
+    const draft = await getDraftPreview(draftId);
+    return (
+      `   Rascunho a enviar:\n` +
+      `   Para: ${draft.to}\n` +
+      `   Assunto: ${draft.subject}\n` +
+      `   Corpo: ${draft.bodyPreview}`
+    );
+  }
 
-  const draft = await getDraftPreview(draftId);
-  return (
-    `   Rascunho a enviar:\n` +
-    `   Para: ${draft.to}\n` +
-    `   Assunto: ${draft.subject}\n` +
-    `   Corpo: ${draft.bodyPreview}`
-  );
+  if (toolName === "mcp__sarah-code__git_push") {
+    const { project, remote, branch, force } = toolInput as {
+      project?: string;
+      remote?: string;
+      branch?: string;
+      force?: boolean;
+    };
+    return (
+      `   git push${force ? " --force" : ""}\n` +
+      `   Projeto: ${project ?? "?"}\n` +
+      `   Remote: ${remote ?? "origin"}\n` +
+      `   Branch: ${branch ?? "?"}` +
+      (force ? "\n   ATENÇÃO: --force pode sobrescrever histórico remoto." : "")
+    );
+  }
+
+  return null;
 }
 
 // Ver "bug real corrigido" no comentário do topo — caminho absoluto a
@@ -231,8 +249,15 @@ export interface SarahSession {
    * real disponível simplesmente não existe.
    */
   dashboard(): Promise<DashboardData>;
-  /** Fecha o audit log e a memória (SQLite) — chamar ao encerrar o app/janela. */
-  close(): void;
+  /**
+   * Fecha o audit log e a memória (SQLite), e derruba TODOS os
+   * containers de projeto ainda abertos (Fase 5) — chamar ao encerrar
+   * o app/janela. Virou `async` nesta fase porque parar containers
+   * de verdade (`podman stop`) não é instantâneo; os callers (ver
+   * `apps/cli`/`apps/menubar`) esperam essa Promise antes de encerrar
+   * o próprio processo, pra não deixar container órfão pra trás.
+   */
+  close(): Promise<void>;
 }
 
 /**
@@ -282,6 +307,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "sarah-gmail": gmailServer,
           "sarah-memory": memoryServer,
           "sarah-apple-notes": appleNotesServer,
+          "sarah-code": codeServer,
         },
         disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
         canUseTool,
@@ -348,7 +374,8 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
     };
   }
 
-  function close(): void {
+  async function close(): Promise<void> {
+    await stopAllProjects();
     audit.close();
     memoryStore.close();
   }

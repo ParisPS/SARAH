@@ -100,7 +100,10 @@ async function main(): Promise<void> {
     }
   } finally {
     rl.close();
-    session.close();
+    // Fase 5: `close()` virou async (espera containers de projeto
+    // pararem de verdade) — precisa de `await` antes do processo
+    // encerrar, senão um container podia ficar órfão.
+    await session.close();
   }
 }
 
