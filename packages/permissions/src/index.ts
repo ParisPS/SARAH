@@ -81,6 +81,13 @@ const LOW_RISK_TOOLS = new Set<string>([
   "mcp__sarah-code__run_command",
   "mcp__sarah-code__git_commit",
   "mcp__sarah-code__preview",
+  // Gráficos vetoriais (Fase 5 parte 4): mesma garantia de segurança
+  // de `write_file`/`run_command` acima — o SVG é escrito e a
+  // rasterização roda dentro do MESMO container isolado de `code.*`,
+  // nada novo em termos de superfície de risco. Aditivo/reversível
+  // (só escreve arquivos em assets/ do projeto).
+  "mcp__sarah-graphics__create_svg",
+  "mcp__sarah-graphics__export_raster",
   // `mcp__sarah-code__git_push` fica DE FORA de propósito — SEMPRE
   // alto risco, sem exceção, mesmo dentro do sandbox. Regra definida
   // desde a primeira mensagem deste projeto: git push/--force nunca é

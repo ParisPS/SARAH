@@ -252,9 +252,36 @@ export async function createProjectContainer(slug: string, hostDir: string): Pro
 
   await applyLanFirewall(pid);
 
-  // node:alpine não traz git/ssh por padrão — instala uma vez na
-  // criação do container (não a cada comando).
-  await podman(["exec", name, "sh", "-c", "apk add --no-cache git openssh-client >/dev/null 2>&1"], { timeoutMs: 30000 });
+  // node:alpine não traz git/ssh nem conversão SVG→raster por padrão —
+  // instala tudo de uma vez na criação do container (não a cada
+  // comando). `rsvg-convert` (Fase 5 parte 4, gráficos) NÃO vem junto
+  // do pacote `librsvg` no Alpine — é um pacote separado, confirmado
+  // testando (`apk search rsvg` lista os dois como pacotes distintos).
+  // `imagemagick` sozinho também NÃO tem suporte a JPEG de verdade
+  // (testado: `magick ... saida.jpg` escrevia dados PNG com extensão
+  // .jpg, e forçar o formato falhava com "no decode delegate") — o
+  // pacote `imagemagick-jpeg` é o delegate que falta, confirmado
+  // testando que só com ele o JPEG gerado tem os magic bytes certos
+  // (`ffd8ff...`) e `magick identify` reconhece como JPEG de verdade.
+  // Terceiro achado, o mais sutil: `rsvg-convert` NÃO falha e NÃO
+  // avisa nada quando o SVG tem `<text>` — ele simplesmente renderiza
+  // o texto como INVISÍVEL, porque a imagem base não tem NENHUMA fonte
+  // instalada (`fc-list` vazio, `fc-match sans` sem devolver nada).
+  // Só descoberto abrindo o PNG resultante de verdade (não só
+  // conferindo os magic bytes) — um círculo azul perfeito, sem a letra
+  // que devia estar no meio. `ttf-dejavu` (fonte comum, licença
+  // permissiva, boa cobertura) resolve — reconfirmado depois: o mesmo
+  // SVG passa a renderizar o texto certinho.
+  await podman(
+    [
+      "exec",
+      name,
+      "sh",
+      "-c",
+      "apk add --no-cache git openssh-client rsvg-convert imagemagick imagemagick-jpeg ttf-dejavu >/dev/null 2>&1",
+    ],
+    { timeoutMs: 45000 }
+  );
 
   const portResult = await podman(["port", name, String(PREVIEW_CONTAINER_PORT)]);
   const portMatch = portResult.stdout.trim().match(/:(\d+)\s*$/);

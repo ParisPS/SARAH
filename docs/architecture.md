@@ -2344,6 +2344,99 @@ repositório no GitHub é um artefato real na conta do usuário; apagar
 sem pedir seria uma ação difícil de reverter e de fora do escopo desta
 sessão. Fica disponível pro usuário decidir se quer manter ou apagar.
 
+## Decisões e bugs encontrados na Fase 5, parte 4 (gráficos vetoriais — SVG)
+
+Nota de numeração: o pedido original chamou isso de "Fase 5, parte
+2" — mas "parte 2" (Base44) e "parte 3" (GitHub automático) já
+tinham sido fechadas antes. Documentado aqui como parte 4, pra manter
+a numeração sequencial batendo com a ordem real de implementação.
+
+Objetivo: `graphics.create_svg`/`graphics.export_raster`, sem API
+externa nova — o próprio modelo escreve o SVG como texto (mesma
+técnica de compor um mockup) e a tool só valida o mínimo e salva
+dentro do MESMO sandbox de `code.*` (mesmo projeto, mesma pasta, mesmo
+container). Por isso vive no mesmo pacote (`@sarah/sandbox`,
+`graphics.ts` novo) e reusa `writeProjectFile`/`runProjectCommand` já
+existentes, só com um servidor MCP novo (`sarah-graphics`) pra manter
+os nomes de tool separados de `code.*`. Risco baixo, registrado em
+`LOW_RISK_TOOLS` — mesma garantia de isolamento do container já
+validada nas partes anteriores, nada de superfície de risco nova.
+
+### Três achados reais testando a rasterização — nenhum assumido
+
+Pedido explícito do usuário: confirmar que o container tem ferramenta
+de conversão SVG→raster, testando, não assumindo. Testado num
+container descartável (mesma imagem base, `node:20-alpine`) ANTES de
+mudar `podman.ts`:
+
+1. **`rsvg-convert` não vem junto do pacote `librsvg`** — são pacotes
+   Alpine SEPARADOS (`apk search rsvg` lista os dois distintos).
+   Instalar só `librsvg` deixa o binário `rsvg-convert` ausente.
+2. **`imagemagick` sozinho não tem suporte a JPEG de verdade** —
+   `magick foo.png -flatten foo.jpg` "funcionava" (saía código 0, um
+   arquivo era criado), mas os magic bytes do arquivo eram de PNG
+   (`89504e47`), não de JPEG (`ffd8ff`) — só percebido inspecionando
+   os bytes, não só o exit code. Forçar o formato explicitamente
+   (`JPEG:foo.jpg`) expõe o erro real: "no decode delegate for this
+   image format". O pacote que falta é `imagemagick-jpeg` (delegate
+   separado) — só com ele instalado o JPEG gerado tem os magic bytes
+   certos e `magick identify` reconhece como JPEG de verdade.
+3. **O mais sutil: texto em SVG renderiza INVISÍVEL, sem erro nenhum**
+   — `rsvg-convert` processa um SVG com `<text>` sem falhar, sem
+   warning, e devolve um PNG "válido" (magic bytes certos, dimensões
+   certas) — só que a imagem base não tem NENHUMA fonte instalada
+   (`fc-list` vazio, `fc-match sans` não devolve nada), então o texto
+   é desenhado com uma fonte que não existe = nada. Só descoberto
+   porque a validação incluiu ABRIR o PNG de verdade (via a tool
+   `Read`, que renderiza imagem) em vez de só conferir magic
+   bytes/exit code — um círculo azul perfeito, sem a letra que devia
+   estar no meio. Corrigido instalando `ttf-dejavu` (fonte comum,
+   licença permissiva); revalidado que o mesmo SVG passa a renderizar
+   o texto certinho depois.
+
+Os quatro pacotes (`rsvg-convert`, `imagemagick`, `imagemagick-jpeg`,
+`ttf-dejavu`) entraram na mesma linha `apk add` que já instalava
+`git`/`openssh-client` na criação do container (`podman.ts`,
+`createProjectContainer`) — timeout do `apk add` aumentado de 30s pra
+45s (a lista de pacotes cresceu, ainda que o tempo real medido tenha
+ficado bem abaixo disso, ~3s).
+
+### Design da tool: SVG é escrito pelo modelo, não gerado
+
+`create_svg` recebe `svgContent` (o markup `<svg>...</svg>` completo,
+composto pelo próprio modelo) — não existe geração de imagem
+nenhuma dentro da tool, só uma validação leve (a string precisa conter
+uma tag `<svg>`) e a escrita do arquivo dentro de `assets/` do
+projeto. Um `description` opcional é embutido como `<title>`
+acessível logo depois da tag `<svg>` de abertura — além de
+acessibilidade, ajuda a identificar o arquivo em ferramentas como o
+Illustrator, que costuma mostrar o título do documento.
+
+### Validação de verdade
+
+Via o agente real, reabrindo o projeto de teste da Fase 5 parte 3
+(`sarah-github-teste`): pedido "cria um logo simples em SVG (círculo
+azul com a letra S branca), exporta pra PNG e JPG" — `create_svg` e as
+duas chamadas de `export_raster` rodaram como `auto-allow` (baixo
+risco, sem confirmação nenhuma). Conferido no disco, fora do fluxo do
+agente:
+
+- `assets/logo.svg` — markup limpo, válido, `<title>` embutido
+  corretamente.
+- `assets/logo.png` — magic bytes de PNG confirmados via `xxd`.
+- `assets/logo.jpg` — magic bytes de JPEG confirmados via `xxd`.
+- **As duas imagens abertas de verdade** (não só os bytes) confirmam
+  visualmente o círculo azul com a letra "S" branca legível no meio —
+  incluindo depois de corrigir o bug de fonte ausente (a primeira
+  rodada, antes do fix, gerava um círculo sem texto nenhum — revalidado
+  depois do `ttf-dejavu` que o mesmo SVG passa a renderizar certo).
+
+**Não verificado por mim**: abrir o SVG no Adobe Illustrator — não
+tenho o aplicativo disponível pra testar. O arquivo é um SVG 1.1
+simples e padrão (namespace declarado, `viewBox`, formas básicas +
+texto, sem nada exótico), então a expectativa é que abra normalmente,
+mas essa confirmação específica fica pro usuário.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -2410,7 +2503,17 @@ sessão. Fica disponível pro usuário decidir se quer manter ou apagar.
    GitHub (não só no texto do agente) — incluindo um bug real
    encontrado e corrigido nessa validação (`security -w` devolvia
    segredos multi-linha como hex em vez do texto original; toda chave
-   SSH batia nisso — corrigido guardando em base64 no Keychain).)**
+   SSH batia nisso — corrigido guardando em base64 no Keychain). **Fase
+   5 parte 4 completa**: `graphics.create_svg`/`graphics.export_raster`
+   — o modelo escreve o SVG como texto (sem geração de imagem), a tool
+   só valida e salva em `assets/` do mesmo sandbox; rasterização via
+   `rsvg-convert`+`imagemagick`, três achados reais testando (não
+   assumindo) — `rsvg-convert` é pacote separado de `librsvg`,
+   `imagemagick` sozinho não tem delegate de JPEG de verdade, e a
+   imagem base não tem NENHUMA fonte instalada (texto em SVG renderiza
+   invisível, sem erro — só descoberto abrindo o PNG de verdade, não só
+   conferindo os bytes). Todos corrigidos e revalidados abrindo as
+   imagens geradas de verdade.)**
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
    nuance no risco médio.
@@ -2529,3 +2632,19 @@ API do GitHub — incluindo um bug real encontrado e corrigido nesse
 teste (`security -w` devolvendo segredos multi-linha como hex em vez
 do texto original, afetando toda chave SSH guardada no Keychain;
 corrigido guardando em base64).
+
+**Fase 5, parte 4 está completa** (gráficos vetoriais — SVG, detalhes
+na seção acima): `graphics.create_svg`/`graphics.export_raster`,
+registradas no servidor MCP novo `sarah-graphics`, reusando o mesmo
+sandbox/projeto de `code.*` — sem API externa nova, o modelo escreve o
+SVG diretamente como texto. Testado (não assumido) que a imagem base
+do container tinha gaps reais pra rasterização — três achados
+corrigidos: `rsvg-convert` é pacote separado de `librsvg`,
+`imagemagick` sozinho não converte JPEG de verdade (faltava o
+delegate), e a imagem base não tinha nenhuma fonte instalada (texto em
+SVG renderizava invisível, sem nenhum erro — só percebido abrindo o
+PNG de verdade). Validado de ponta a ponta via o agente real, no
+mesmo projeto de teste da parte 3: logo criado em SVG, exportado pra
+PNG e JPG, as duas imagens abertas e conferidas visualmente (círculo
+azul com a letra "S" legível). Abrir o SVG no Illustrator fica pro
+usuário confirmar — sem o aplicativo disponível pra testar aqui.
