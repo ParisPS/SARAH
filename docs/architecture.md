@@ -2518,13 +2518,46 @@ qualquer garantia de que o pai (Electron) espere por isso.
   app.quit())` adicionados — sem isso, um sinal direto no processo
   nunca passava pelo `before-quit` nenhum.
 
-**Revalidado depois do fix**: chamando `daemon.stop()` (a função
-corrigida) direto, com um projeto de verdade aberto — confirmado que a
-`Promise` só resolve (~5.4s) DEPOIS que `podman ps` já não mostra mais
-o container. Não testado através da janela de verdade do Electron
-(precisaria de automação de UI) — validado no nível exato onde o bug
-vivia (a função `stop()` e a cadeia que a chama), com o mesmo
-`daemon.ts`/`spawnSarahDaemon` reais, não uma simulação.
+**Revalidado depois do fix, em duas camadas — uma confirmou, a outra
+NÃO se sustentou, corrigido aqui em vez de deixar a alegação errada**:
+
+1. `daemon.stop()` isolado (chamando a função corrigida direto, fora
+   do Electron, com um projeto de verdade aberto): confirmado que a
+   `Promise` só resolve (~5.4s) DEPOIS que `podman ps` já não mostra
+   mais o container. Essa parte do fix está correta.
+2. **Através do processo real do Electron, com tracing temporário**
+   (`appendFileSync` num arquivo, removido depois de confirmar):
+   `before-quit` dispara e `daemon.stop()` é esperado de verdade antes
+   do `app.quit()` seguinte — confirmado no caso SEM projeto aberto.
+   MAS, testando de novo com um projeto de sandbox de verdade aberto e
+   um `kill -TERM` direto no processo, o container ficou órfão de
+   qualquer jeito — a alegação anterior (nesta mesma seção) de que
+   "`process.on('SIGTERM'/'SIGINT', () => app.quit())` resolve isso"
+   NÃO se sustentou no reteste. Investigado com o mesmo tracing: o
+   listener do `process.on("SIGTERM", ...)` NUNCA chegou a disparar,
+   mas `before-quit` disparou mesmo assim — ou seja, o próprio
+   Electron parece interceptar `SIGTERM` nativamente e chamar algo
+   equivalente a `app.quit()` por conta própria, sem passar pelo
+   listener JS. Isso bate com um issue conhecido do próprio Electron
+   (checado, não assumido): `process.on('SIGTERM')` não dispara de
+   forma confiável no processo principal, especialmente em modo
+   dev/não empacotado — que é exatamente como este projeto roda hoje
+   (`pnpm --filter menubar dev`).
+
+**Conclusão honesta**: o fix corrige de verdade o caminho GARANTIDO de
+sair (Tray "Sair"/Cmd+Q, que chama `app.quit()` de verdade → passa por
+`before-quit`). Um `kill -TERM` direto no processo (o que eu vinha
+usando pra reiniciar a SARAH durante o desenvolvimento) continua sem
+garantia de esperar o container parar, por uma limitação do próprio
+Electron em modo dev, não corrigível só com código de aplicação. O
+impacto disso é LIMITADO, não um vazamento permanente:
+`cleanupOrphanedContainers()` (Fase 5 parte 1) já varre containers
+órfãos (`sarah.owner-pid` + liveness) no início de qualquer sessão
+nova — o container some na próxima vez que qualquer instância da
+SARAH abrir um projeto, mesmo que este caminho específico não tenha
+esperado. Registrado aqui pra não reaparecer como "resolvido" quando
+não está — só o caminho normal de sair (Tray/Cmd+Q) tem garantia
+forte; `kill -TERM` cru continua best-effort.
 
 ## Decisões e bugs encontrados na Fase 5, parte 5 (geração de slides — .pptx)
 

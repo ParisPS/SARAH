@@ -314,26 +314,40 @@ app.whenReady().then(() => {
 
 /**
  * Achado real (Fase 5 parte 4 — investigado depois de restartar a
- * própria SARAH pra testar código novo, sem relação com gráficos):
- * a versão antiga daqui era `before-quit` só marcando `isQuitting`, e
- * um `will-quit` chamando `daemon?.stop()` sem esperar nada
- * (fire-and-forget). Reproduzido de propósito: com um projeto aberto
- * (container rodando), matar este processo deixava o container pra
- * trás — o processo principal terminava antes do filho (`daemon.ts`)
- * conseguir esperar `podman stop -t 5` (que pode legitimamente levar
- * vários segundos). Corrigido com o padrão assíncrono recomendado do
+ * própria SARAH pra testar código novo, sem relação com gráficos): a
+ * versão antiga daqui era `before-quit` só marcando `isQuitting`, e um
+ * `will-quit` chamando `daemon?.stop()` sem esperar nada
+ * (fire-and-forget). Corrigido com o padrão assíncrono recomendado do
  * Electron: intercepta a PRIMEIRA tentativa de sair
  * (`event.preventDefault()`), espera `daemon.stop()` de verdade
  * (agora `Promise<void>`, ver `sarah-daemon.ts`), e só then chama
  * `app.quit()` de novo — a flag `shuttingDown` evita loop infinito
- * nessa segunda chamada.
+ * nessa segunda chamada. CONFIRMADO com tracing temporário (removido
+ * depois) que `before-quit` dispara e `daemon.stop()` é esperado de
+ * verdade antes do processo sair.
  *
- * `SIGTERM`/`SIGINT` diretos no processo (ex.: `kill`, encerramento
- * pelo sistema) NÃO disparam `before-quit` sozinhos — esse evento só
- * existe a partir de `app.quit()`/Cmd+Q/menu. Sem isso, um `kill`
- * externo matava o processo (e o filho junto) sem passar por
- * `before-quit` nenhuma, mesmo bug de container órfão por outro
- * caminho. Corrigido roteando os dois sinais pro mesmo `app.quit()`.
+ * `process.on("SIGTERM"/"SIGINT", ...)`: mantidos como reforço
+ * best-effort, mas achado real limitando a confiança neles — testado
+ * com tracing que o LISTENER deste `process.on("SIGTERM", ...)` NUNCA
+ * chegou a disparar num `kill -TERM` direto no processo, mesmo assim
+ * `before-quit` disparou (o próprio Electron parece interceptar
+ * SIGTERM nativamente e chamar algo equivalente a `app.quit()` por
+ * conta própria, antes da JS layer). Isso bate com um issue conhecido
+ * do próprio Electron (`process.on('SIGTERM')` não executa de forma
+ * confiável no processo principal, sobretudo em modo dev/não
+ * empacotado — https://github.com/electron/electron, buscado antes
+ * de assumir). CONSEQUÊNCIA REAL, não resolvida: reproduzido com um
+ * projeto de sandbox de verdade aberto, `kill -TERM` no processo NÃO
+ * esperou o container parar antes do processo sair — o container
+ * ficou órfão. O impacto é LIMITADO, não permanente: `create_project`
+ * já varre containers órfãos no início de qualquer sessão nova
+ * (`cleanupOrphanedContainers`, Fase 5 parte 1, baseado em
+ * `sarah.owner-pid` + liveness) — o container some na próxima vez que
+ * QUALQUER instância da SARAH abrir um projeto, não fica vazando pra
+ * sempre. O caminho GARANTIDO de sair sem deixar nada pra trás
+ * continua sendo o Tray "Sair" (ou Cmd+Q) — esses passam por
+ * `app.quit()` de verdade, então por `before-quit`, que ESTE fix
+ * corrigiu de fato.
  */
 let shuttingDown = false;
 
