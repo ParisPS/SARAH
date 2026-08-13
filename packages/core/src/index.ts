@@ -10,7 +10,7 @@ import { appleRemindersServer, checkRemindersStatus } from "@sarah/apple-reminde
 import { gmailServer, getDraftPreview, checkGmailStatus } from "@sarah/gmail";
 import { createMemoryServer } from "@sarah/memory";
 import { appleNotesServer, checkNotesStatus } from "@sarah/apple-notes";
-import { codeServer, graphicsServer, stopAllProjects } from "@sarah/sandbox";
+import { codeServer, graphicsServer, slidesServer, stopAllProjects } from "@sarah/sandbox";
 
 /**
  * Núcleo do agente: monta o Gateway de permissões, o audit log, a
@@ -405,6 +405,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "sarah-apple-notes": appleNotesServer,
           "sarah-code": codeServer,
           "sarah-graphics": graphicsServer,
+          "sarah-slides": slidesServer,
         },
         disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
         canUseTool,

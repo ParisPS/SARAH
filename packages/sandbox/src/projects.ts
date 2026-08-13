@@ -229,16 +229,20 @@ function requireProject(projectSlug: string): ProjectRuntime {
 }
 
 /**
- * Escreve DIRETO no host (não via `podman exec`) — `/workspace` dentro
- * do container é literalmente `hostDir` montado, então escrever de um
- * lado ou outro dá o mesmo resultado, e fazer pelo host evita o
- * overhead de entrar no container só pra um `cat > arquivo`.
- * `relPath` é validado duas vezes: rejeita ".."/caminho absoluto de
- * cara (mensagem de erro melhor), e reconfirma depois de resolver o
- * caminho que ele continua DENTRO de `hostDir` (a checagem que
- * realmente importa — a primeira é só uma rejeição mais cedo/clara).
+ * Valida um caminho relativo dentro da pasta do projeto e garante que
+ * os diretórios intermediários existam — extraído de `writeProjectFile`
+ * (Fase 5 parte 5) pra ser reusado por qualquer tool que precise
+ * escrever um arquivo dentro do projeto, texto OU binário (ex.:
+ * `slides.create_presentation`, que usa a biblioteca `pptxgenjs` pra
+ * escrever o `.pptx` ela mesma, em vez de receber conteúdo pronto).
+ * Centralizar essa validação (em vez de duplicar) importa porque é
+ * código de segurança — path traversal — não é só um detalhe de
+ * conveniência. Mesma validação de sempre: rejeita ".."/caminho
+ * absoluto cedo (mensagem clara), reconfirma depois de resolver que o
+ * alvo continua DENTRO de `hostDir` (a checagem que realmente
+ * importa).
  */
-export async function writeProjectFile(projectSlug: string, relPath: string, content: string): Promise<string> {
+export async function resolveProjectFilePath(projectSlug: string, relPath: string): Promise<string> {
   const runtime = requireProject(projectSlug);
   if (relPath.startsWith("/") || relPath.includes("..")) {
     throw new Error(`Caminho inválido: "${relPath}" — precisa ser relativo à raiz do projeto, sem ".." nem começar com "/".`);
@@ -249,6 +253,17 @@ export async function writeProjectFile(projectSlug: string, relPath: string, con
     throw new Error(`Caminho "${relPath}" tentou sair da pasta do projeto — bloqueado.`);
   }
   await mkdir(dirname(target), { recursive: true });
+  return target;
+}
+
+/**
+ * Escreve DIRETO no host (não via `podman exec`) — `/workspace` dentro
+ * do container é literalmente `hostDir` montado, então escrever de um
+ * lado ou outro dá o mesmo resultado, e fazer pelo host evita o
+ * overhead de entrar no container só pra um `cat > arquivo`.
+ */
+export async function writeProjectFile(projectSlug: string, relPath: string, content: string): Promise<string> {
+  const target = await resolveProjectFilePath(projectSlug, relPath);
   await fsWriteFile(target, content, "utf-8");
   return target;
 }

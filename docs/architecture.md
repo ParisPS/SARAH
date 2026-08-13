@@ -2526,6 +2526,89 @@ o container. Não testado através da janela de verdade do Electron
 vivia (a função `stop()` e a cadeia que a chama), com o mesmo
 `daemon.ts`/`spawnSarahDaemon` reais, não uma simulação.
 
+## Decisões e bugs encontrados na Fase 5, parte 5 (geração de slides — .pptx)
+
+Objetivo: `slides.create_presentation(project, filename, outline)` —
+gera um `.pptx` REAL (OOXML padrão) dentro da pasta do projeto.
+Complementar ao Claude Design, não substituto: o mesmo arquivo pode
+ser aberto e continuar editado no Claude Design, PowerPoint, Keynote
+ou Google Slides depois.
+
+### Tecnologia: `pptxgenjs` checado antes de decidir, não assumido
+
+Pedido explícito do usuário: confirmar a maturidade/documentação
+atual antes de aceitar a sugestão inicial. Checado de verdade (não só
+lembrado de outra conversa):
+
+- **npm**: versão `4.0.1`, última publicação ~1 ano atrás (meados de
+  2025) — sem release novo recente, mas também sem marca de
+  `deprecated`.
+- **Downloads**: ~12,3 milhões/mês (via `api.npmjs.org`) — uso real,
+  em escala, longe de abandonado.
+- **GitHub**: MIT, definições TypeScript nativas inclusas, 6.000+
+  estrelas, 3.463 commits, issues/PRs ainda ativos.
+- **Comparação com alternativas** (busca dedicada): `pptxgenjs`
+  continua listada como a opção mais popular; até uma alternativa mais
+  nova (`pptx-automizer`, focada em editar templates `.pptx`
+  existentes) usa `pptxgenjs` por baixo pra gerar conteúdo do zero —
+  ou seja, não é a biblioteca certa pra ISSO, o próprio ecossistema
+  ainda trata `pptxgenjs` como a base.
+
+Conclusão: mantém a escolha original, mas VERIFICADA — o release
+cadence mais lento não é sinal de abandono aqui, é coerente com um
+formato (OOXML) estável que não pede releases frequentes só pra
+continuar funcionando.
+
+### Onde a geração roda: host, não dentro do container
+
+Diferente de `graphics.export_raster` (que precisa de um binário de
+sistema, `rsvg-convert`, e por isso roda via `podman exec` dentro do
+container isolado), `pptxgenjs` é JavaScript puro — sem binding
+nativo, sem dependência de binário nenhum. Não tem motivo pra pagar o
+custo/complexidade de rodar dentro do container só por rodar; gera
+direto no processo do daemon, mesmo espírito de `code.create_project`
+criando o repositório do GitHub direto do host. A garantia de
+segurança não muda: `resolveProjectFilePath` (extraído de dentro de
+`writeProjectFile`, Fase 5 parte 1, agora reusado por `slides.ts`)
+continua sendo a MESMA validação de path traversal — só a pasta do
+projeto pode ser escrita, com ou sem container no meio.
+
+### Formatação: capa separada + slides de conteúdo
+
+`title` (da chamada) vira um slide de capa só com o título,
+centralizado; cada item de `slides` vira um slide de conteúdo
+(título + bullets, opcionalmente notas do apresentador). Layout
+16:9 fixo (`defineLayout`), cores neutras — "formatação básica" como
+pedido, sem tentar decidir um design elaborado que o usuário nem
+pediu.
+
+### Validação de verdade
+
+Via o agente real, reabrindo o projeto de teste (`sarah-github-teste`,
+mesmo da Fase 5 parte 3/4): pedido "cria uma apresentação sobre Marte,
+5 slides". `create_project` (reabertura) e `create_presentation`
+rodaram como `auto-allow` (baixo risco, sem confirmação). Conferido
+fora do fluxo do agente, sem confiar só no texto da resposta:
+
+- Magic bytes `PK\x03\x04` (um `.pptx` é um ZIP) confirmados via
+  `xxd`.
+- `unzip -l` confirma a estrutura interna esperada de um OOXML válido
+  (`ppt/slides/`, `ppt/slideLayouts/`, etc.) e exatamente 6 arquivos
+  `slideN.xml` (capa + 5 slides de conteúdo).
+- Conteúdo de texto extraído direto do XML interno (`unzip -p ... |
+  grep`) bate com o pedido — título e os 5 bullets do primeiro slide
+  de conteúdo, legíveis.
+- **Confirmado visualmente pelo usuário**, abrindo o arquivo de
+  verdade (Keynote): os 6 slides (capa + 5 de conteúdo, cada um com
+  título e bullets) aparecem corretos.
+
+Upload no Claude Design pra confirmar edição contínua **não testado**
+— não é algo scriptável por aqui (é um produto web, não uma CLI), e a
+única tool de "design" disponível neste ambiente (`DesignSync`) é pra
+outra coisa (sincronizar bibliotecas de componentes de design system,
+não apresentações). Mesmo tratamento do teste do Illustrator na Fase
+5 parte 4: pendente, não bloqueante, fica pro usuário quando quiser.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -2602,7 +2685,17 @@ vivia (a função `stop()` e a cadeia que a chama), com o mesmo
    imagem base não tem NENHUMA fonte instalada (texto em SVG renderiza
    invisível, sem erro — só descoberto abrindo o PNG de verdade, não só
    conferindo os bytes). Todos corrigidos e revalidados abrindo as
-   imagens geradas de verdade.)**
+   imagens geradas de verdade.)** **Fase 5 parte 5 completa**:
+   `slides.create_presentation` gera um `.pptx` real via `pptxgenjs`
+   (maturidade checada de verdade, não assumida — ~12,3M downloads/mês,
+   ainda a base do ecossistema JS pra isso), direto no host (JS puro,
+   sem precisar do container), reusando a mesma validação de path
+   traversal de `code.write_file`. Complementar ao Claude Design, não
+   substituto. Validado de ponta a ponta: estrutura OOXML/ZIP
+   conferida por fora (magic bytes, `unzip -l`, texto extraído do XML
+   interno) e **confirmado visualmente pelo usuário** abrindo o
+   arquivo de verdade no Keynote. Upload no Claude Design não testado
+   — não é scriptável por aqui, fica pendente/não bloqueante.
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
    nuance no risco médio.
@@ -2742,3 +2835,18 @@ visualmente pelo próprio usuário** — não por screenshot automatizado
 a capturar um token do GitHub em texto puro no terminal por trás,
 apagado na hora; decisão foi parar de automatizar captura de tela pra
 validação visual). Illustrator continua pendente, não bloqueante.
+
+**Fase 5, parte 5 está completa** (geração de slides — `.pptx`,
+detalhes na seção acima): `slides.create_presentation`, servidor MCP
+novo `sarah-slides`, gera um `.pptx` OOXML real via `pptxgenjs` —
+maturidade da biblioteca CHECADA de verdade antes de aceitar a
+sugestão original (npm, downloads, GitHub, comparação com
+alternativas), não assumida. Roda direto no host (JS puro, sem
+container) reusando a mesma validação de path traversal de
+`code.write_file` (extraída pra `resolveProjectFilePath`, reusável).
+Complementar ao Claude Design, não substituto. Validado de ponta a
+ponta: estrutura OOXML/ZIP conferida por fora (magic bytes, `unzip
+-l`, texto extraído do XML interno batendo com o pedido) e
+**confirmado visualmente pelo usuário** abrindo o arquivo de verdade
+no Keynote. Upload no Claude Design não testado (não é scriptável por
+aqui) — pendente, não bloqueante, mesmo tratamento do Illustrator.

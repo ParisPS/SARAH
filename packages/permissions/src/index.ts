@@ -88,6 +88,14 @@ const LOW_RISK_TOOLS = new Set<string>([
   // (só escreve arquivos em assets/ do projeto).
   "mcp__sarah-graphics__create_svg",
   "mcp__sarah-graphics__export_raster",
+  // Geração de slides (Fase 5 parte 5): mesma justificativa —
+  // `pptxgenjs` escreve o .pptx direto na pasta do projeto (aditivo,
+  // reversível), sem tocar nada fora dali. Não roda dentro do
+  // container (é JS puro, sem binário de sistema envolvido), mas a
+  // garantia é a mesma: só a pasta do projeto pode ser escrita
+  // (`resolveProjectFilePath`, a mesma validação de path traversal de
+  // `code.write_file`).
+  "mcp__sarah-slides__create_presentation",
   // `mcp__sarah-code__git_push` fica DE FORA de propósito — SEMPRE
   // alto risco, sem exceção, mesmo dentro do sandbox. Regra definida
   // desde a primeira mensagem deste projeto: git push/--force nunca é

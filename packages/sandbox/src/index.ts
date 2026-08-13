@@ -211,3 +211,4 @@ export { stopAllProjects } from "./projects.js";
 export { saveProjectDeployKey } from "./git-credential.js";
 export { saveGithubToken } from "./github.js";
 export { graphicsServer } from "./graphics.js";
+export { slidesServer } from "./slides.js";
