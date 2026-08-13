@@ -312,13 +312,41 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", () => {
+/**
+ * Achado real (Fase 5 parte 4 — investigado depois de restartar a
+ * própria SARAH pra testar código novo, sem relação com gráficos):
+ * a versão antiga daqui era `before-quit` só marcando `isQuitting`, e
+ * um `will-quit` chamando `daemon?.stop()` sem esperar nada
+ * (fire-and-forget). Reproduzido de propósito: com um projeto aberto
+ * (container rodando), matar este processo deixava o container pra
+ * trás — o processo principal terminava antes do filho (`daemon.ts`)
+ * conseguir esperar `podman stop -t 5` (que pode legitimamente levar
+ * vários segundos). Corrigido com o padrão assíncrono recomendado do
+ * Electron: intercepta a PRIMEIRA tentativa de sair
+ * (`event.preventDefault()`), espera `daemon.stop()` de verdade
+ * (agora `Promise<void>`, ver `sarah-daemon.ts`), e só then chama
+ * `app.quit()` de novo — a flag `shuttingDown` evita loop infinito
+ * nessa segunda chamada.
+ *
+ * `SIGTERM`/`SIGINT` diretos no processo (ex.: `kill`, encerramento
+ * pelo sistema) NÃO disparam `before-quit` sozinhos — esse evento só
+ * existe a partir de `app.quit()`/Cmd+Q/menu. Sem isso, um `kill`
+ * externo matava o processo (e o filho junto) sem passar por
+ * `before-quit` nenhuma, mesmo bug de container órfão por outro
+ * caminho. Corrigido roteando os dois sinais pro mesmo `app.quit()`.
+ */
+let shuttingDown = false;
+
+app.on("before-quit", (event) => {
   isQuitting = true;
+  if (shuttingDown || !daemon) return;
+  event.preventDefault();
+  shuttingDown = true;
+  daemon.stop().finally(() => app.quit());
 });
 
-app.on("will-quit", () => {
-  daemon?.stop();
-});
+process.on("SIGTERM", () => app.quit());
+process.on("SIGINT", () => app.quit());
 
 // Diferente de um app "normal", um app de menu bar NÃO deve sair
 // quando a (única) janela fecha — é esperado continuar rodando só com

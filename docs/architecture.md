@@ -2437,6 +2437,64 @@ simples e padrão (namespace declarado, `viewBox`, formas básicas +
 texto, sem nada exótico), então a expectativa é que abra normalmente,
 mas essa confirmação específica fica pro usuário.
 
+## Bug real encontrado fora do escopo da Fase 5 parte 4 — shutdown do `apps/menubar` deixava container órfão
+
+Achado sem relação com gráficos/SVG — descoberto restartando a própria
+SARAH (`apps/menubar`) durante a validação desta fase, pra rodar o
+código novo, com um projeto de sandbox aberto no meio. Corrigido na
+hora por ser um caso real de recurso vazando (mesma categoria dos
+bugs #1/#2 da Fase 5 parte 1), não porque fazia parte do pedido.
+
+**Reproduzido**: com um projeto de `code.*` aberto (container
+rodando), matar o processo principal do Electron (`kill -TERM` no PID,
+ou até o fluxo "normal" de sair) podia deixar o container pra trás,
+ainda rodando, órfão.
+
+**Causa raiz, investigada (não assumida)** — dois problemas
+empilhados:
+
+1. `sarah-daemon.ts` (lado Electron da ponte com o processo filho
+   `daemon.ts`) tinha um `stop()` "fire and forget": `child.kill()`
+   sem esperar nada. `daemon.ts` tem um `shutdown()` assíncrono de
+   verdade (`await session.close()`, que para cada container via
+   `podman stop -t 5` — validado que isso legitimamente leva ~5-6s de
+   verdade, não é instantâneo). O processo principal saía antes do
+   filho terminar de parar o container.
+2. `main-process.ts` só tratava `before-quit`/`will-quit` (eventos que
+   só existem quando `app.quit()` é chamado pelo próprio app — Tray,
+   Cmd+Q). Um `SIGTERM`/`SIGINT` direto no processo (ex.: `kill`,
+   encerramento do sistema) nunca passava por esse caminho nenhum.
+
+**Validado isoladamente, achado por achado**: um teste chamando
+`daemon.ts` direto (via `spawnSarahDaemon`, o mesmo código que
+`main-process.ts` usa) confirmou que o `shutdown()` do filho sozinho
+funciona (~5.7s, container removido de verdade). Outro teste
+confirmou que matar só o PROCESSO PAI (sem nunca sinalizar o filho)
+deixa o filho como órfão, que SOZINHO detecta o stdin fechado e
+completa o próprio shutdown — mas só depois de vários segundos, sem
+qualquer garantia de que o pai (Electron) espere por isso.
+
+**Corrigido**:
+
+- `sarah-daemon.ts`: `stop()` virou `Promise<void>` — manda `SIGTERM`
+  pro filho e só resolve quando o evento `exit` do filho dispara de
+  verdade (com um `SIGKILL` de segurança depois de 8s, pra nunca
+  travar o app pra sempre se o filho ficar preso por outro motivo).
+- `main-process.ts`: `before-quit` agora intercepta a primeira
+  tentativa de sair (`event.preventDefault()`), espera `daemon.stop()`
+  de verdade, e só então chama `app.quit()` de novo (flag
+  `shuttingDown` evita loop). `process.on("SIGTERM"/"SIGINT", () =>
+  app.quit())` adicionados — sem isso, um sinal direto no processo
+  nunca passava pelo `before-quit` nenhum.
+
+**Revalidado depois do fix**: chamando `daemon.stop()` (a função
+corrigida) direto, com um projeto de verdade aberto — confirmado que a
+`Promise` só resolve (~5.4s) DEPOIS que `podman ps` já não mostra mais
+o container. Não testado através da janela de verdade do Electron
+(precisaria de automação de UI) — validado no nível exato onde o bug
+vivia (a função `stop()` e a cadeia que a chama), com o mesmo
+`daemon.ts`/`spawnSarahDaemon` reais, não uma simulação.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**

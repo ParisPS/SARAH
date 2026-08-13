@@ -52,7 +52,12 @@ export interface SarahDaemon {
   ask(prompt: string): Promise<AskResult>;
   history(limit?: number): Promise<HistoryEntry[]>;
   dashboard(): Promise<DashboardData>;
-  stop(): void;
+  /**
+   * Pede pro processo filho encerrar e ESPERA de verdade ele sair —
+   * ver "achado real" no comentário de `stop()` mais abaixo pro
+   * porquê disso não poder ser fire-and-forget.
+   */
+  stop(): Promise<void>;
 }
 
 export function spawnSarahDaemon(tsxBinPath: string, daemonScriptPath: string, confirm: ConfirmFn): SarahDaemon {
@@ -165,8 +170,36 @@ export function spawnSarahDaemon(tsxBinPath: string, daemonScriptPath: string, c
     });
   }
 
-  function stop(): void {
-    child.kill();
+  /**
+   * Achado real (validando a Fase 5 parte 4, sem relação com gráficos
+   * em si — encontrado restartando a própria SARAH pra testar o
+   * código novo): a versão antiga desta função era `child.kill()` sem
+   * esperar nada — "fire and forget". `daemon.ts` (o filho) tem um
+   * `shutdown()` assíncrono de verdade (`await session.close()`,
+   * que para cada container de projeto aberto via `podman stop -t
+   * 5` — pode levar vários segundos de verdade). Reproduzido: matar o
+   * processo do Electron com um projeto aberto deixava o container
+   * pra trás, porque o processo principal saía antes do filho
+   * terminar de parar o container. Corrigido esperando o evento
+   * `exit` do filho antes de resolver — com um timeout de segurança
+   * (`SIGKILL` depois de 8s) pra nunca travar o app pra sempre, caso o
+   * filho fique preso por algum motivo.
+   */
+  function stop(): Promise<void> {
+    return new Promise((resolve) => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        resolve();
+        return;
+      }
+      const forceKillTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, 8000);
+      child.once("exit", () => {
+        clearTimeout(forceKillTimer);
+        resolve();
+      });
+      child.kill("SIGTERM");
+    });
   }
 
   return { ask, history, dashboard, stop };
