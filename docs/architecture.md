@@ -2642,6 +2642,149 @@ outra coisa (sincronizar bibliotecas de componentes de design system,
 não apresentações). Mesmo tratamento do teste do Illustrator na Fase
 5 parte 4: pendente, não bloqueante, fica pro usuário quando quiser.
 
+## Decisões e bugs encontrados na Fase 5, parte 6 (extração de assets do Figma)
+
+Objetivo: `figma.export_assets(project, fileKey, nodeIds?, format?)` —
+lê um arquivo do Figma do usuário (SÓ leitura, nunca escreve nada de
+volta lá) e exporta fontes usadas, estilos de cor e imagens/
+componentes pra `assets/figma/` do projeto, como insumo real pro
+código gerado por `code.*` (Fase 5 parte 1). Editar o Figma
+diretamente fica de fora de propósito, decisão separada pro futuro.
+
+### Autenticação: checada na documentação oficial atual, não assumida
+
+Pedido explícito do usuário. Confirmado em agosto de 2026
+(developers.figma.com, não de memória):
+
+- Token de acesso pessoal: Figma → menu da conta → Configurações →
+  aba **Security** → "Personal access tokens" → "Generate new token".
+- Diferente do que a API mais antiga do Figma pedia (um escopo amplo
+  único, `files:read`, hoje DEPRECIADO): a criação do token hoje exige
+  escolher escopos GRANULARES. Usados aqui: `file_content:read`
+  (cobre document tree, estilos locais e o endpoint de exportação de
+  imagens) + `current_user:read` (só pra validar o token com `GET
+  /v1/me`, chamada de baixo privilégio, antes de salvar — mesmo
+  padrão do GitHub).
+- Header de autenticação: `X-Figma-Token: <token>` — NÃO é
+  `Authorization: Bearer`, diferente do GitHub/outras APIs já
+  integradas neste projeto. Confirmado antes de escrever qualquer
+  código de cliente HTTP.
+- Deliberadamente EVITADO o escopo `file_variables:read` (a API mais
+  nova de "Variables" do Figma) — checado que é Enterprise-only; a
+  extração de cor usa o mecanismo clássico de "Styles" (sempre
+  presente no `styles` do retorno de `/v1/files/:key`, publicado ou
+  não), que funciona em qualquer plano do Figma.
+
+### Limitação real, documentada pra não ser prometida além do que existe
+
+A API do Figma NÃO devolve o arquivo de fonte em si — fontes
+comerciais/licenciadas não são redistribuíveis pela Figma. "Extrair
+fontes" aqui significa só identificar NOME da família/peso usados
+(pra o agente escolher uma equivalente disponível, ex. via Google
+Fonts, ou avisar que precisa da fonte licenciada) — nunca baixar o
+arquivo da fonte. Deixado explícito na description da tool, pra não
+criar expectativa errada.
+
+### Extração de cor: por que não dá pra usar só o endpoint de `styles`
+
+O retorno de `/v1/files/:key` tem um `styles` de nível superior, mas é
+só METADADO (nome + tipo do estilo) — não inclui o valor hex em si.
+Pra pegar a cor de verdade, é preciso percorrer a árvore de nós,
+achar um nó que referencia aquele estilo (`node.styles.fill` apontando
+pro ID do estilo) e ler o `fills[0].color` DAQUELE nó (RGBA 0-1,
+convertido pra hex aqui). Implementado assim — uma passagem só pela
+árvore, coletando fontes/cores/candidatos-a-exportação juntos, não três
+passagens separadas.
+
+### Exportação de imagens: um formato por chamada, respeitando o que o designer já configurou
+
+`/v1/images/:key` só aceita UM `format` (svg/png/jpg/pdf) por chamada.
+Quando `nodeIds` não é passado explicitamente, a tool usa os nós que o
+PRÓPRIO usuário já marcou pra exportação dentro do Figma
+(`exportSettings` no nó — respeita a intenção do design, em vez de
+tentar adivinhar o que exportar) — e usa o formato que CADA nó já tem
+configurado lá, agrupando por formato antes de chamar a API (nós SVG
+numa chamada, nós PNG noutra). O parâmetro `format` da tool só serve
+de fallback pra quando `nodeIds` é passado manualmente e o nó não tem
+`exportSettings` conhecido.
+
+### Validação — bloqueada em duas credenciais/dados reais que não dá pra simular
+
+Módulos carregam limpo, TypeScript tipa sem erro. A validação de
+verdade (ler um arquivo real do Figma do usuário, exportar assets,
+gerar um site de teste com fontes/imagens reais e comparar visual
+antes/depois) depende de:
+
+1. O usuário rodar `pnpm figma:auth` com um token de verdade.
+2. Um arquivo do Figma de verdade do usuário (com fontes e alguma
+   arte/logo real) pra apontar `fileKey`.
+
+Nenhum dos dois pode ser fabricado — mesmo padrão já seguido pro
+GitHub (Fase 5 parte 3) e pro Gmail (Fase 1): pausa aqui até o usuário
+fornecer os dois, e a seção ganha uma "Validação final" depois.
+
+### Bug real #1 encontrado testando com um token de verdade: campo `styleType` vs `style_type`
+
+O usuário forneceu o token (`pnpm figma:auth`, autenticado como
+"Paris PS") e um arquivo real
+(`figma.com/design/QkiFeHLqU3WOgfiWassiXL/...`, "Dairy Products
+Landing Page"). Testando a chamada crua a `GET /v1/files/:key` antes
+de rodar qualquer código do projeto: o campo do mapa `styles` veio
+como `styleType` (camelCase) — o resumo da documentação oficial
+(buscado antes de implementar) tinha indicado `style_type`
+(snake_case). Corrigido a interface TypeScript depois de inspecionar
+a resposta real da API, não confiando no resumo sem checar contra o
+JSON de verdade.
+
+### Bug real #2 encontrado validando com o agente: nome de arquivo caía no ID cru quando `nodeIds` era passado manualmente
+
+O arquivo de teste não tinha NADA marcado pra exportação dentro do
+próprio Figma (`exportSettings` vazio em toda a árvore) — cenário
+comum, principalmente em arquivos "Community" duplicados como este.
+Isso forçou o caminho de `nodeIds` passado manualmente (IDs
+descobertos inspecionando a árvore: `1:697` o componente "logo",
+`1:347`/`1:353` dois cards de exemplo). Rodando de verdade, os
+arquivos saíram como `1-697.svg` em vez de `logo.svg` — o código só
+resolvia o NOME real do nó pra candidatos vindos de `exportSettings`
+(`acc.exportables`), e caía no fallback `name: id` pra qualquer ID
+passado manualmente, que é justamente o caminho mais comum na
+prática. Corrigido indexando TODO nó por ID durante a mesma passagem
+pela árvore (`WalkAcc.byId`), não só os marcados pra exportação —
+revalidado depois que os arquivos saem com o nome certo
+(`logo.svg`, `product-card.svg`, `recipe-card.svg`).
+
+### Validação final — de ponta a ponta, com dados reais do usuário
+
+Via o agente real, projeto `teste-figma-dairy`:
+`figma.export_assets` (arquivo `QkiFeHLqU3WOgfiWassiXL`, `nodeIds`
+manuais pelos motivos acima) rodou como `auto-allow` (baixo risco).
+Conferido fora do fluxo do agente:
+
+- `assets/figma/fonts.json` — 4 fontes reais (Playfair Display 400/
+  700/900, Montserrat 400), batendo com o que o arquivo usa de
+  verdade.
+- `assets/figma/colors.json` — 2 estilos de cor nomeados (Omega
+  `#ffffff`, Haze `#eff5fa`), extraídos andando pela árvore até um nó
+  que referencia o estilo (o endpoint de `styles` só tem metadado, não
+  o hex — ver seção de decisão acima).
+- `logo.svg`/`product-card.svg`/`recipe-card.svg` — SVGs reais,
+  abertos e conferidos (o logo é uma ilustração vetorial de verdade,
+  não um placeholder).
+
+**Site de teste comparando antes/depois**, pedido explícito do
+usuário: gerados `index-before.html` (placeholder genérico —
+`system-ui`, azul/cinza genérico, sem logo) e `index-after.html`
+(MESMA estrutura de conteúdo, mas com fontes reais via Google Fonts,
+cores reais de `colors.json`, e o `logo.svg`/cards reais embutidos).
+Achado do próprio agente durante a geração, não um bug: Omega/Haze
+sozinhas (branco + azul bem claro) não davam contraste suficiente pra
+botões/preços — o agente usou o vermelho do próprio `logo.svg`
+(`#E30613`) como cor de destaque, decisão razoável, documentada no CSS
+gerado. **Confirmado visualmente pelo usuário**, abrindo os dois
+arquivos de verdade (sem screenshot automatizado, mesma política
+adotada na Fase 5 parte 4): a diferença entre o placeholder e a versão
+com assets reais do Figma é clara.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -2728,7 +2871,22 @@ não apresentações). Mesmo tratamento do teste do Illustrator na Fase
    conferida por fora (magic bytes, `unzip -l`, texto extraído do XML
    interno) e **confirmado visualmente pelo usuário** abrindo o
    arquivo de verdade no Keynote. Upload no Claude Design não testado
-   — não é scriptável por aqui, fica pendente/não bloqueante.
+   — não é scriptável por aqui, fica pendente/não bloqueante. **Fase 5
+   parte 6 completa**: `figma.export_assets` lê um arquivo do Figma
+   (SÓ leitura, nunca escreve de volta lá) e exporta fontes usadas
+   (nome/peso — não o arquivo da fonte, o Figma não redistribui isso),
+   estilos de cor nomeados e imagens/componentes pra `assets/figma/`
+   do projeto. Autenticação checada na documentação oficial atual
+   (escopos granulares `file_content:read`+`current_user:read`, header
+   `X-Figma-Token`, não assumido de memória antiga). Validado de ponta
+   a ponta com um arquivo real do usuário — dois bugs reais corrigidos
+   no processo (campo `styleType` vs `style_type` assumido errado dos
+   docs; nome de arquivo caindo no ID cru quando `nodeIds` era passado
+   manualmente, o caminho mais comum já que a maioria dos arquivos não
+   tem nada marcado pra exportação dentro do próprio Figma) — e um
+   site de teste comparando placeholder genérico vs. versão com
+   fontes/cores/logo reais do Figma, **confirmado visualmente pelo
+   usuário**.
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
    nuance no risco médio.
@@ -2883,3 +3041,23 @@ ponta: estrutura OOXML/ZIP conferida por fora (magic bytes, `unzip
 **confirmado visualmente pelo usuário** abrindo o arquivo de verdade
 no Keynote. Upload no Claude Design não testado (não é scriptável por
 aqui) — pendente, não bloqueante, mesmo tratamento do Illustrator.
+
+**Fase 5, parte 6 está completa** (extração de assets do Figma,
+detalhes na seção acima): `figma.export_assets`, servidor MCP novo
+`sarah-figma`, SÓ leitura/exportação do Figma (nunca escreve de volta
+lá) — fontes usadas (nome/peso, não o arquivo da fonte), estilos de
+cor nomeados (hex, resolvido andando pela árvore até um nó que usa o
+estilo, já que o endpoint de `styles` só tem metadado) e imagens/
+componentes exportados pra `assets/figma/` do projeto. Autenticação
+checada na documentação oficial atual do Figma antes de implementar —
+escopos granulares (`file_content:read`+`current_user:read`), header
+`X-Figma-Token`. Validado de ponta a ponta com um arquivo real do
+usuário (token configurado via `pnpm figma:auth`, arquivo real do
+Figma) — dois bugs reais corrigidos durante a validação: o campo
+`styleType` (a documentação resumida tinha indicado `style_type`,
+errado) e o nome de arquivo caindo no ID cru quando `nodeIds` era
+passado manualmente (caminho mais comum, já que a maioria dos
+arquivos do Figma não tem nada marcado pra exportação lá dentro).
+Gerado um site de teste comparando placeholder genérico vs. versão
+com fontes/cores/logo reais do Figma — **confirmado visualmente pelo
+usuário** que a diferença é clara.

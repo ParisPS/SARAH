@@ -96,6 +96,14 @@ const LOW_RISK_TOOLS = new Set<string>([
   // (`resolveProjectFilePath`, a mesma validação de path traversal de
   // `code.write_file`).
   "mcp__sarah-slides__create_presentation",
+  // Extração de assets do Figma (Fase 5 parte 6): SÓ leitura do lado
+  // do Figma (nada é escrito de volta lá) + escrita dentro da pasta
+  // do projeto (mesma validação de path traversal de sempre). Editar
+  // o Figma diretamente é uma decisão separada, de fora do escopo
+  // desta tool — se um dia existir, essa sim entraria como candidata
+  // a alto risco, por analogia com qualquer ação que modifica um
+  // sistema externo do usuário.
+  "mcp__sarah-figma__export_assets",
   // `mcp__sarah-code__git_push` fica DE FORA de propósito — SEMPRE
   // alto risco, sem exceção, mesmo dentro do sandbox. Regra definida
   // desde a primeira mensagem deste projeto: git push/--force nunca é
