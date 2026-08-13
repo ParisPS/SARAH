@@ -1,4 +1,4 @@
-# SARAH — Fases 0-4 completas (interface gráfica; voz adiada)
+# SARAH — Fases 0-5 completas (voz adiada; Figma com pendência de cota)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -156,10 +156,68 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   `send_draft` confirmado pelo dialog nativo) registrado no mesmo
   `data/sarah.db` compartilhado com o terminal.
 
+## Fase 5 — sandbox de código, projetos gráficos e Figma (partes 1-6 completas, parte 7 com pendência)
+
+- **Sandbox de código por projeto** (`code.create_project`/
+  `write_file`/`run_command`/`git_commit`/`git_push`/`preview`):
+  container Podman isolado por projeto — isolamento de rede (só
+  internet, nunca a rede local do host) e de filesystem (nada fora da
+  pasta do projeto) **confirmado com teste real**, não só configurado.
+  `code.create_project` cria a pasta em `~/SarahProjects/<slug>/` **e**
+  um repositório PRIVADO no GitHub automaticamente, com uma credencial
+  dedicada (chave de deploy por projeto) que nunca entra no container.
+  `code.git_push` fica SEMPRE atrás de confirmação de alto risco, sem
+  exceção — validado com um push real, confirmado direto na API do
+  GitHub, não só pelo texto do agente.
+- **Base44** (app builder externo, conta premium) fica disponível só
+  se pedido explicitamente pelo nome — nunca escolhido sozinho pelo
+  agente; sem pedido explícito, o caminho local (`code.*`) é sempre o
+  padrão.
+- **Gráficos vetoriais** (`graphics.create_svg`/`export_raster`):
+  completo. O modelo escreve o SVG como texto, a tool valida/rasteriza
+  (`rsvg-convert`+`imagemagick`) dentro do mesmo sandbox. **Nota
+  importante**: SVG é um formato vetorial — não produz imagens
+  realistas/fotográficas, isso é limitação do formato, não bug
+  (confirmado abrindo os arquivos de verdade).
+- **Slides** (`slides.create_presentation`): completo. Gera um `.pptx`
+  "esqueleto" real (via `pptxgenjs`) dentro do projeto — texto/layout
+  reais, não um mockup. O fluxo esperado é o usuário refinar esse
+  arquivo depois no **Claude Design** (produto separado da Anthropic,
+  sem integração automática — é handoff manual, não uma feature desta
+  tool).
+- **Figma** (`figma.export_assets`): implementado e tecnicamente
+  funcional — API REST (não Dev Mode MCP: essa rota foi tentada e
+  abandonada por bloqueio de allowlist de cliente, ver
+  `docs/architecture.md`) —, mas **BLOQUEADO NA PRÁTICA pelo rate
+  limit do plano gratuito do Figma** (~6 requisições/mês no total,
+  compartilhadas entre leitura de arquivo e exportação de imagem).
+  Código já otimizado pra minimizar chamadas (reaproveita IDs já
+  obtidos, agrupa exportação por formato numa única chamada, loga os
+  headers de rate limit). **Pendência explícita, não escondida**: dois
+  projetos reais do usuário prontos e parados esperando decisão sobre
+  upgrade pro plano Professional do Figma.
+- **Imagem realista** (raster, via API paga tipo Flux/GPT Image/
+  Firefly): avaliada, decisão CONSCIENTE do usuário foi não seguir por
+  enquanto — registrada como decisão, não como esquecimento.
+- **Vídeo**: descartado do escopo desta fase por decisão do usuário —
+  não é retomado sem pedido explícito.
+- **Validado:** projeto real de ponta a ponta (site estático, escrita
+  de arquivo, comando, commit real, preview respondendo via `curl`
+  externo, incluindo reiniciar a sessão); repositório GitHub real
+  criado e um push real confirmado na API; SVG exportado pra PNG/JPG e
+  aberto de verdade; `.pptx` aberto de verdade no Keynote; e um
+  arquivo real do Figma extraído, com `content.json` (estrutura/texto
+  reais) validado contra o design de verdade — tudo **confirmado
+  visualmente pelo usuário**, sem screenshot automatizado (ver
+  `docs/architecture.md` pro quase-incidente que motivou essa
+  política).
+
 **O que este código NÃO faz ainda (de propósito):** voz (ver acima —
-Fase 4 mesmo, adiada, não esquecida), agente de código/sandbox,
-GitHub, deploy de sites, memória semântica — ver o roadmap completo em
-`docs/architecture.md`.
+Fase 4 mesmo, adiada, não esquecida), GitHub completo (commits/PRs,
+só criação de repo + push existem hoje), deploy público de sites (só
+preview local dentro do sandbox), imagem realista/vídeo (Fase 5,
+decisões conscientes de não seguir por enquanto) e memória semântica —
+ver o roadmap completo em `docs/architecture.md`.
 
 ## Setup
 
@@ -184,6 +242,16 @@ escopo pedido mudar (já aconteceu uma vez nesta fase) ou se o token
 expirar — o app OAuth roda em modo "Testing" de propósito (decisão
 registrada em `docs/architecture.md`), então o token expira a cada
 ~7 dias.
+
+Pra Fase 5: `pnpm github:auth` uma vez (PAT clássico, escopo `repo`,
+Keychain) antes do primeiro `code.create_project` — sem isso, o
+projeto é criado só localmente, sem repositório no GitHub. `pnpm
+figma:auth` uma vez (token de acesso pessoal, escopos `file_content:
+read`+`current_user:read`, Keychain) antes do primeiro
+`figma.export_assets` — **atenção à cota**: contas sem assento Dev/
+Full pago no Figma têm um limite de só ~6 chamadas por MÊS pra leitura
+de arquivo + exportação de imagem juntas (ver `docs/architecture.md`,
+Fase 5 parte 7).
 
 ## O que testar
 
@@ -231,6 +299,20 @@ resposta, a segunda animação só começa depois que a primeira termina.
 Botão
 direito no ícone → "Histórico..." abre uma janela com as últimas ações
 do Gateway.
+
+**Fase 5**: `cria um site estático simples chamado teste` (chama
+`code.create_project` + `code.write_file`, baixo risco — cria a pasta
+em `~/SarahProjects/teste/` e um repositório privado no GitHub, se
+`pnpm github:auth` já tiver sido rodado) / `mostra um preview` (`code.
+preview`, abre uma URL local) / `dá push pro GitHub` (`code.git_push`,
+**alto risco** — sempre pede confirmação, sem exceção) / `cria uma
+logo em SVG pro projeto teste` (`graphics.create_svg` +
+`export_raster`, baixo risco) / `gera uma apresentação sobre X`
+(`slides.create_presentation`, baixo risco, gera um `.pptx` real).
+Figma (`figma.export_assets`, baixo risco) precisa de `pnpm figma:auth`
+rodado antes e um `fileKey` real — **cuidado com a cota**: contas sem
+assento pago no Figma têm só ~6 chamadas/mês, então não vale ficar
+testando repetido (ver nota em "Setup" acima e `docs/architecture.md`).
 
 A primeira chamada de cada integração do sistema (Calendar, Reminders,
 Notes) deve mostrar um diálogo do macOS pedindo permissão pro processo

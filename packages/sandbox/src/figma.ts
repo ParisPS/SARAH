@@ -41,6 +41,21 @@ import { resolveProjectFilePath } from "./projects.js";
  * fonte equivalente disponível, ex. via Google Fonts, ou avisar o
  * usuário que precisa da fonte licenciada), nunca baixar o arquivo da
  * fonte.
+ *
+ * `content.json` (Fase 5 parte 7 — melhoria sobre a parte 6, depois de
+ * dois becos sem saída tentando o servidor MCP do Figma: o Dev Mode
+ * MCP desktop exige assento pago, e o servidor MCP remoto só aceita
+ * uma lista fechada de clientes pré-aprovados pelo Figma — VS Code,
+ * Cursor, Claude Code —, sem registro dinâmico pra um cliente novo
+ * como a SARAH; documentado em detalhe no docs/architecture.md). Em
+ * vez de esperar por acesso externo, a melhoria ficou dentro da
+ * própria API REST: `document.characters` (o texto de VERDADE de cada
+ * nó `TEXT`) e a hierarquia de frames/grupos/componentes já vinham no
+ * mesmo `GET /v1/files/:key` — só não estavam sendo usados. Isso
+ * fecha boa parte da lacuna real encontrada na parte 6 (o site de
+ * teste tinha cópia/estrutura INVENTADA pelo agente, só a marca era
+ * real): agora o agente recebe a estrutura e o texto de verdade do
+ * design, não precisa mais inventar.
  */
 
 const FIGMA_TOKEN_SERVICE = "sarah-figma-token";
@@ -129,6 +144,8 @@ interface FigmaNode {
   styles?: Record<string, string>;
   style?: FigmaTextStyle;
   exportSettings?: FigmaExportSetting[];
+  /** Texto de VERDADE de um nó TEXT — o campo que faltava usar na Fase 5 parte 6. */
+  characters?: string;
   children?: FigmaNode[];
 }
 
@@ -226,11 +243,94 @@ function walkDocument(node: FigmaNode, styles: Record<string, FigmaStyleMeta>, a
   }
 }
 
+/**
+ * Tipos de nó que compõem "estrutura de conteúdo" — inclui containers
+ * (pra manter a hierarquia real de seções) e TEXT (pro texto de
+ * verdade). De propósito NÃO inclui nós puramente visuais (VECTOR,
+ * RECTANGLE, ELLIPSE, BOOLEAN_OPERATION, STAR, LINE etc.) — um ícone
+ * decomposto em dezenas de paths só acrescentaria ruído, sem nenhum
+ * conteúdo/texto relevante; imagens/ícones já são cobertos à parte
+ * por `exportSettings`/`nodeIds` (exportação de verdade, não um nome
+ * de nó solto).
+ */
+const CONTENT_NODE_TYPES = new Set(["DOCUMENT", "CANVAS", "FRAME", "GROUP", "SECTION", "COMPONENT", "COMPONENT_SET", "INSTANCE", "TEXT"]);
+
+interface ContentNode {
+  /**
+   * ID real do nó no Figma (Fase 5 parte 7, item 1 da correção de
+   * rate limit) — antes descartado, obrigando uma chamada NOVA a
+   * `/v1/files/:key` só pra descobrir o ID de um componente antes de
+   * exportá-lo como imagem. Guardando aqui (dado que já vinha de
+   * graça na mesma resposta usada pra montar esta árvore), o agente
+   * consegue ler `content.json` já salvo e escolher os `nodeIds` certos
+   * pra `export_assets` sem gastar nenhuma chamada extra contra a cota
+   * do Figma — importante porque `GET file`/`GET file nodes`/`GET
+   * images` dividem a MESMA cota Tier 1 (documentado em
+   * developers.figma.com/docs/rest-api/rate-limits/): só 6/mês pra
+   * seat View/Collab, contra 10-20/min pra seat Dev/Full.
+   */
+  id: string;
+  name: string;
+  type: string;
+  text?: string;
+  children?: ContentNode[];
+}
+
+/**
+ * Constrói uma árvore só com estrutura + texto de verdade — o insumo
+ * que faltava na Fase 5 parte 6 pra gerar um site fiel ao design, sem
+ * o agente ter que inventar cópia/seções. Nó de tipo fora de
+ * `CONTENT_NODE_TYPES` é simplesmente ignorado (nem ele nem os filhos
+ * entram na árvore) — ver comentário de `CONTENT_NODE_TYPES`.
+ */
+function buildContentTree(node: FigmaNode): ContentNode | null {
+  if (!CONTENT_NODE_TYPES.has(node.type)) return null;
+
+  const result: ContentNode = { id: node.id, name: node.name, type: node.type };
+  if (node.type === "TEXT" && node.characters) {
+    result.text = node.characters;
+  }
+
+  const children = (node.children ?? [])
+    .map((child) => buildContentTree(child))
+    .filter((child): child is ContentNode => child !== null);
+  if (children.length > 0) {
+    result.children = children;
+  }
+
+  return result;
+}
+
+/**
+ * Lê os headers de rate limit do Figma quando presentes (documentado
+ * em developers.figma.com/docs/rest-api/rate-limits/: `Retry-After`
+ * em segundos, `X-Figma-Rate-Limit-Type` — "low" pra seat View/Collab
+ * (até 6/mês em Tier 1) ou "high" pra seat Dev/Full (10-20/min,
+ * conforme o plano) —, e `X-Figma-Plan-Tier`). Fase 5 parte 7, item 4
+ * da correção de rate limit: antes disso um 429 só mostrava o corpo
+ * cru da resposta, sem dar pra saber se era throttling por minuto ou
+ * a cota MENSAL de um seat View/Collab batendo — a diferença importa
+ * porque muda completamente o que vale a pena tentar (esperar 1 min
+ * não resolve nada se o problema é mensal). Só enriquece a mensagem
+ * de erro com dado real; nunca decide sozinha se deve tentar de novo.
+ */
+function rateLimitInfo(res: Response): string {
+  const retryAfter = res.headers.get("Retry-After");
+  const limitType = res.headers.get("X-Figma-Rate-Limit-Type");
+  const planTier = res.headers.get("X-Figma-Plan-Tier");
+  if (!retryAfter && !limitType && !planTier) return "";
+  const parts: string[] = [];
+  if (retryAfter) parts.push(`Retry-After: ${retryAfter}s`);
+  if (limitType) parts.push(`tipo de limite: ${limitType} (low = seat View/Collab até 6/mês, high = seat Dev/Full por minuto)`);
+  if (planTier) parts.push(`plano: ${planTier}`);
+  return ` [rate limit do Figma — ${parts.join(", ")}]`;
+}
+
 async function fetchFigmaFile(token: string, fileKey: string): Promise<FigmaFileResponse> {
   const res = await fetch(`${API_BASE}/files/${fileKey}`, { headers: figmaHeaders(token) });
   if (!res.ok) {
     const detail = await res.text();
-    throw new Error(`Falha ao ler o arquivo do Figma "${fileKey}" (HTTP ${res.status}): ${detail}`);
+    throw new Error(`Falha ao ler o arquivo do Figma "${fileKey}" (HTTP ${res.status}): ${detail}${rateLimitInfo(res)}`);
   }
   return (await res.json()) as FigmaFileResponse;
 }
@@ -239,7 +339,14 @@ async function fetchFigmaFile(token: string, fileKey: string): Promise<FigmaFile
  * `/v1/images` só aceita UM `format` por chamada — agrupa os nós por
  * formato resolvido (o que o designer configurou em cada nó, via
  * `exportSettings`, tem prioridade sobre o `format` padrão da tool) e
- * faz uma chamada por grupo.
+ * faz uma chamada por grupo, não uma por nó. Isso importa pra cota:
+ * `GET file`/`GET file nodes`/`GET images` dividem a MESMA cota Tier 1
+ * do Figma (ver `rateLimitInfo` acima) — pedir N componentes do MESMO
+ * formato numa chamada com `nodeIds: [id1, id2, ...]` continua sendo
+ * só 1 chamada aqui dentro, não N. Só formatos diferentes (ex.: um
+ * componente em SVG e outro em PNG na mesma chamada de `export_assets`)
+ * geram mais de uma chamada de verdade — por isso vale preferir manter
+ * tudo no mesmo formato quando a cota estiver apertada.
  */
 async function exportImages(token: string, fileKey: string, nodes: ExportCandidate[]): Promise<Map<string, { url: string; format: "SVG" | "PNG" }>> {
   const byFormat = new Map<"SVG" | "PNG", ExportCandidate[]>();
@@ -257,7 +364,7 @@ async function exportImages(token: string, fileKey: string, nodes: ExportCandida
     });
     if (!res.ok) {
       const detail = await res.text();
-      throw new Error(`Falha ao exportar imagens do Figma (formato ${format}, HTTP ${res.status}): ${detail}`);
+      throw new Error(`Falha ao exportar imagens do Figma (formato ${format}, HTTP ${res.status}): ${detail}${rateLimitInfo(res)}`);
     }
     const body = (await res.json()) as { images: Record<string, string | null>; err?: string };
     if (body.err) throw new Error(`Figma recusou a exportação: ${body.err}`);
@@ -275,18 +382,32 @@ const exportAssetsTool = tool(
   "export_assets",
   "Lê um arquivo do Figma do usuário (SÓ leitura — nunca escreve nada de volta no Figma) e exporta pra pasta " +
     "assets/figma/ do projeto: fontes usadas (nome/peso — não o arquivo da fonte em si, o Figma não " +
-    "redistribui isso), estilos de cor nomeados (hex) e imagens/componentes marcados pra exportação " +
-    "dentro do Figma (ou os IDs específicos passados em `nodeIds`). `fileKey` é o trecho da URL do arquivo " +
-    "(figma.com/design/<fileKey>/... ou figma.com/file/<fileKey>/...). Precisa de `pnpm figma:auth` " +
+    "redistribui isso), estilos de cor nomeados (hex), imagens/componentes marcados pra exportação " +
+    "dentro do Figma (ou os IDs específicos passados em `nodeIds`), e a ESTRUTURA DE CONTEÚDO real do " +
+    "design (content.json) — hierarquia de seções/frames/componentes com o TEXTO DE VERDADE de cada nó, " +
+    "não inventado. IMPORTANTE: ao gerar um site/página a partir de um arquivo do Figma, use content.json " +
+    "como fonte da estrutura e do texto — NUNCA invente cópia/seções/produtos; só fontes/cores/imagens " +
+    "reais sem estrutura real ainda deixa o resultado infiel ao design. `fileKey` é o trecho da URL do " +
+    "arquivo (figma.com/design/<fileKey>/... ou figma.com/file/<fileKey>/...). Precisa de `pnpm figma:auth` " +
     "configurado antes — se não estiver, a tool recusa com uma mensagem clara. Baixo risco: só lê o Figma " +
-    "e escreve arquivos dentro da pasta do projeto, nada é enviado de volta pro Figma.",
+    "e escreve arquivos dentro da pasta do projeto, nada é enviado de volta pro Figma. ATENÇÃO A COTA: " +
+    "GET file/GET file nodes/GET images do Figma dividem a MESMA cota (Tier 1) — pra conta sem seat Dev/Full " +
+    "pago, é só ~6 chamadas por MÊS (não por minuto). Cada `id` de nó já vem salvo em content.json (campo " +
+    "`id` de cada item da árvore) depois da primeira chamada — reaproveite esses IDs pra montar `nodeIds` " +
+    "sem precisar chamar de novo. E sempre que possível, passe VÁRIOS `nodeIds` do MESMO formato numa única " +
+    "chamada — a tool já agrupa e faz 1 requisição por formato, não 1 por nó, então pedir 8 componentes " +
+    "PNG de uma vez custa o mesmo que pedir 1.",
   {
     project: z.string().describe("slug/nome do projeto, retornado por code.create_project"),
     fileKey: z.string().describe("chave do arquivo do Figma, extraída da URL (figma.com/design/<fileKey>/...)"),
     nodeIds: z
       .array(z.string())
       .optional()
-      .describe("IDs específicos de nós pra exportar como imagem (opcional — sem isso, exporta os nós já marcados pra exportação dentro do próprio Figma)"),
+      .describe(
+        "IDs específicos de nós pra exportar como imagem (opcional — sem isso, exporta os nós já marcados pra exportação dentro do próprio Figma). " +
+          "Reaproveite os IDs já salvos em content.json (campo `id`) em vez de ler o arquivo de novo, e passe todos os IDs do mesmo formato juntos numa " +
+          "chamada só — evita gastar chamadas extras de uma cota que pode ser mensal (ver descrição da tool)."
+      ),
     format: z.enum(["svg", "png"]).default("svg").describe("formato padrão de exportação, usado quando o nó não tem um formato já configurado no Figma"),
   },
   async (args) => {
@@ -331,6 +452,10 @@ const exportAssetsTool = tool(
       const colorsPath = await resolveProjectFilePath(args.project, "assets/figma/colors.json");
       await writeFile(colorsPath, JSON.stringify(Array.from(acc.colors.values()), null, 2), "utf-8");
 
+      const contentTree = buildContentTree(file.document);
+      const contentPath = await resolveProjectFilePath(args.project, "assets/figma/content.json");
+      await writeFile(contentPath, JSON.stringify(contentTree, null, 2), "utf-8");
+
       const written: string[] = [];
       const failed: string[] = [];
       if (candidates.length > 0) {
@@ -365,6 +490,7 @@ const exportAssetsTool = tool(
                 fontsPath,
                 colorsFound: acc.colors.size,
                 colorsPath,
+                contentPath,
                 imagesExported: written,
                 imagesFailed: failed,
               },

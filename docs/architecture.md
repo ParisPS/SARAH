@@ -2785,6 +2785,154 @@ arquivos de verdade (sem screenshot automatizado, mesma política
 adotada na Fase 5 parte 4): a diferença entre o placeholder e a versão
 com assets reais do Figma é clara.
 
+## Decisões e bugs encontrados na Fase 5, parte 7 (Figma: três tentativas de arquitetura, e por que a Fase 5 fecha com uma pendência)
+
+Correção de abordagem sobre a Fase 5 parte 6, confirmada com o
+usuário: o site de teste gerado ali usava fontes/cores/logo REAIS
+(via API REST), mas a ESTRUTURA e o CONTEÚDO continuavam sendo
+inventados pelo agente interpretando o JSON cru do arquivo — o
+próprio agente confirmou isso na hora. Pra "respeitar os componentes"
+de verdade (pedido original do usuário), a hipótese inicial foi usar a
+ferramenta que o próprio Figma construiu especificamente pra isso: o
+**Dev Mode MCP Server**. Essa hipótese passou por TRÊS arquiteturas
+diferentes nesta parte — as duas primeiras viraram becos sem saída
+reais (não hipotéticos, cada uma bloqueada por um teste ao vivo), a
+terceira é a que ficou.
+
+### Tentativa 1 — Dev Mode MCP Server (Figma Desktop), abandonada: exige assento pago
+
+Confirmado na documentação oficial antes de implementar: ativação via
+Figma Desktop → Dev Mode (`Shift+D`) → painel de inspeção → "Enable
+desktop MCP server"; endpoint `http://127.0.0.1:3845/mcp` (Streamable
+HTTP); tool principal `get_design_context`. Implementado e validado
+até o ponto possível sem gastar dinheiro (erro de setup claro, sem
+travar, quando o servidor não está ligado). Bloqueado na prática
+quando o usuário reportou, direto: **"dev mode tenho que pagar"** —
+confirmado depois em help.figma.com que Dev Mode exige assento "Dev ou
+Full" num plano pago (o plano Starter gratuito não inclui). Decisão:
+não insistir nem sugerir pagamento — pesquisar a alternativa gratuita
+e apresentar como opção, mesmo padrão já usado antes pro Docker/Xcode
+CLT (Fase 5 parte 1) e pro Base44 (Fase 5 parte 2): nunca empurrar o
+usuário pra pagar por conta própria. Código do cliente Dev Mode
+DELETADO depois da decisão de abandonar (não ficou morto no repo).
+
+### Tentativa 2 — Figma MCP Server remoto, abandonada: cliente customizado não é aceito
+
+Usuário escolheu "trocar pro servidor remoto" (gratuito em qualquer
+plano, `https://mcp.figma.com/mcp`, não exige Figma Desktop aberto —
+usa link com `node-id`). Implementado do zero um cliente MCP completo
+com OAuth 2.1 + PKCE + Dynamic Client Registration (RFC 7591),
+modelado no exemplo oficial do próprio SDK (buscado direto do GitHub,
+na tag exata da versão instalada — não assumido de memória), com
+`OAuthClientProvider` persistindo client info/tokens no Keychain e um
+servidor loopback local pro callback. Ao testar de verdade contra o
+Figma, a chamada de registro do cliente (`registerClient`) devolveu
+**HTTP 403 "Forbidden"**. Causa raiz confirmada na documentação oficial
+do Figma (developers.figma.com/docs/figma-mcp-server/remote-server-installation/,
+não assumida): só uma lista fechada de clientes pré-aprovados (VS
+Code, Cursor, Claude Code) pode se conectar — não existe registro
+dinâmico pra um cliente novo como a SARAH, só uma lista de espera
+externa, sem prazo, fora do controle deste projeto. Bloqueio real,
+não de configuração — confirmado com um erro ao vivo, não só lido na
+doc. Apresentadas três opções ao usuário (esperar a lista de espera,
+insistir em Dev Mode pago, ou melhorar a API REST já existente);
+escolhida a terceira, explicitamente. Todo o código desta tentativa
+(`figma-devmode.ts`, `figma-oauth.ts`, `scripts/figma-mcp-auth.ts`, a
+dependência `@modelcontextprotocol/sdk` direta) foi DELETADO — as duas
+tentativas MCP não deixaram rastro morto no código, só aqui na
+documentação.
+
+### Tentativa 3 — melhorar a API REST existente (a que ficou)
+
+Achado chave: `document.characters` (o texto de VERDADE de cada nó
+`TEXT`) e a hierarquia de frames/grupos/componentes já vinham no MESMO
+`GET /v1/files/:key` usado desde a Fase 5 parte 6 — só não estavam
+sendo usados. `buildContentTree` percorre a árvore mantendo só tipos
+estruturalmente relevantes (`DOCUMENT`/`CANVAS`/`FRAME`/`GROUP`/
+`SECTION`/`COMPONENT`/`COMPONENT_SET`/`INSTANCE`/`TEXT` — nós
+puramente visuais como `VECTOR`/`RECTANGLE` ficam de fora, viram ruído
+sem conteúdo) e grava `assets/figma/content.json`. Nenhuma chamada
+nova ao Figma — é o MESMO `GET /v1/files/:key` já feito, só lendo mais
+campos da mesma resposta.
+
+**Validado de ponta a ponta** com o arquivo real "Dairy Products
+Landing Page" (`teste-figma-dairy`): `content.json` saiu com texto e
+estrutura genuínos — itens de navegação (Home/Catalog/Recipes/Our
+Story/Certificates/Our Values), copy do hero, 7 produtos reais
+(Graviera Naxou, Feta, Blue Cheese, White Cheese, Gouda, Edam, Rumi
+Cheese), 3 receitas reais (Cheese Cake, Chicken Pizza with Onion,
+Cheese Burger with Bacon), formulário de contato — nada inventado.
+Gerado `index-real.html` do ZERO (não em cima do `index-before/after`
+da parte 6, que tinham cópia inventada) usando só fontes reais
+(`fonts.json`), cores reais (`colors.json` + hex reais lidos dos SVGs
+já exportados — `#E30613`/`#F39200`/`#009FE3`, já que `colors.json` só
+cobre estilos NOMEADOS/publicados, não todo fill solto do design) e o
+`logo.svg` real. O que ficou honestamente marcado como NÃO real no
+próprio HTML: fotos de produto/receita/hero (a API REST não devolve
+essas imagens como asset exportável sem marcar nó a nó) e o layout
+exato (aproximado a olho contra `reference.png`, um export real do
+frame `landing-page-desktop` inteiro, não medido nó a nó).
+
+### Achado real: rate limit do Figma é provavelmente MENSAL, não por minuto — e por quê
+
+Exportar `reference.png` bateu **HTTP 429** na primeira tentativa,
+liberou numa segunda tentativa ~1 minuto depois. Investigando a doc
+oficial (developers.figma.com/docs/rest-api/rate-limits/, não
+assumido): `GET file`/`GET file nodes`/`GET images` dividem a MESMA
+cota, **Tier 1** — pra seat "View/Collab" (o mais provável pra uma
+conta sem assento Dev/Full pago, mesma conta que já não tinha Dev
+Mode), o limite é **até 6 chamadas por MÊS**, não por minuto; só seat
+Dev/Full tem limite por minuto (10-20/min conforme o plano). Como as
+três chamadas do endpoint (`GET file`, `GET file nodes`, `GET images`)
+somam na MESMA cota, toda regeneração de `content.json`/`fonts.json`/
+`colors.json` feita durante os testes desta sessão pode ter consumido
+unidades da mesma cota mensal usada pra exportar imagem — o que
+explica melhor um 429 depois de poucas chamadas do que throttling
+normal por minuto. A resposta 429 do Figma traz `Retry-After`/
+`X-Figma-Rate-Limit-Type`/`X-Figma-Plan-Tier`, mas o código não lia
+esses headers até esta parte — corrigido a seguir.
+
+### Otimizações implementadas pra minimizar chamadas contra uma cota possivelmente quase esgotada
+
+Sem fazer NENHUMA chamada nova ao Figma pra testar (typecheck +
+import local só) — combinado explicitamente com o usuário, que pediu
+pra esperar a confirmação do seat real antes de qualquer chamada ao
+vivo:
+
+1. **Reaproveita IDs já obtidos**: `ContentNode` (a árvore de
+   `content.json`) agora guarda o `id` real de cada nó do Figma — antes
+   descartado, forçando uma chamada NOVA a `/v1/files/:key` só pra
+   descobrir o ID de um componente antes de exportar como imagem. Como
+   `content.json` já vem salvo em disco, o agente escolhe `nodeIds`
+   direto dele, sem gastar cota nova.
+2. **Batch por formato já existia, reforçado na description**:
+   `exportImages` já agrupava nós do mesmo formato numa ÚNICA chamada a
+   `/v1/images` (não uma por nó) — só não estava documentado pro
+   agente usar assim. Description da tool e do parâmetro `nodeIds`
+   atualizadas explicitamente: pedir N componentes do mesmo formato
+   custa o mesmo que pedir 1.
+3. **Log dos headers de rate limit**: novo `rateLimitInfo()` lê
+   `Retry-After`/`X-Figma-Rate-Limit-Type`/`X-Figma-Plan-Tier` da
+   resposta e anexa à mensagem de erro em `fetchFigmaFile` e
+   `exportImages` — da próxima vez que um 429 acontecer, a mensagem já
+   diz se é cota mensal (`low`) ou throttling por minuto (`high`), sem
+   suposição.
+
+### Pendência explícita — Fase 5 fecha sem esconder isso
+
+**Figma está implementado e tecnicamente funcional, mas BLOQUEADO na
+prática pelo rate limit do plano gratuito do Figma** (Tier 1, ~6
+chamadas/mês, compartilhadas entre leitura de arquivo e exportação de
+imagem). Dois projetos reais do usuário estão prontos e parados
+esperando decisão sobre upgrade pro plano Professional do Figma:
+`food-products-site` e `natural-beauty-products-site`. Não seguimos
+testando contra a cota até o usuário confirmar o seat real dele no
+arquivo (Viewer/Collab vs Dev/Full) direto pelo figma.com — decisão
+explícita de não gastar mais chamadas de uma cota que pode já estar
+quase esgotada só com os testes desta sessão. Isso fica registrado
+como pendência real, não como "Fase 5 parte 7 completa" — ver Roadmap
+e "Próximo passo concreto" abaixo.
+
 ## Roadmap completo (pra não perder o fio)
 
 0. Fundação — monorepo, Agent SDK, Gateway, audit log. **(feito)**
@@ -2886,7 +3034,25 @@ com assets reais do Figma é clara.
    tem nada marcado pra exportação dentro do próprio Figma) — e um
    site de teste comparando placeholder genérico vs. versão com
    fontes/cores/logo reais do Figma, **confirmado visualmente pelo
-   usuário**.
+   usuário**. **Fase 5 parte 7 — encerrada com pendência explícita,
+   não completa**: três arquiteturas tentadas pra "respeitar os
+   componentes" de verdade — Dev Mode MCP desktop (abandonada: exige
+   assento pago) e Figma MCP remoto (abandonada: `HTTP 403` real no
+   registro de cliente, allowlist fechada do Figma, sem registro
+   dinâmico) — até chegar na que ficou: melhorar a própria API REST
+   com `content.json` (estrutura + texto de VERDADE de cada nó,
+   `document.characters`, sem gastar chamada nova) e cada `id` de nó
+   reaproveitável direto de lá. Validado de ponta a ponta com um
+   arquivo real (texto/estrutura genuínos, nada inventado,
+   `index-real.html` gerado do zero) — mas **bloqueado na prática**
+   pelo rate limit do Figma (Tier 1, ~6 chamadas/mês pra seat sem
+   assento pago, compartilhado entre leitura de arquivo e exportação
+   de imagem — achado real, não suposição, confirmado na doc oficial
+   de rate limits). Código já otimizado pra minimizar chamadas
+   (reaproveita IDs, batching por formato, loga headers de rate
+   limit), mas dois projetos reais do usuário (`food-products-site`,
+   `natural-beauty-products-site`) ficam parados esperando decisão
+   sobre upgrade de plano do Figma.
 6. GitHub completo (commits, PRs) + deploy de sites.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
    nuance no risco médio.
@@ -3061,3 +3227,60 @@ arquivos do Figma não tem nada marcado pra exportação lá dentro).
 Gerado um site de teste comparando placeholder genérico vs. versão
 com fontes/cores/logo reais do Figma — **confirmado visualmente pelo
 usuário** que a diferença é clara.
+
+**Fase 5, parte 7 (Figma — três arquiteturas, detalhes na seção
+acima)**: tentativa 1 (Dev Mode MCP desktop) e tentativa 2 (Figma MCP
+remoto) foram implementadas e abandonadas, cada uma por um bloqueio
+real testado ao vivo (assento pago; `HTTP 403` no registro de cliente
+OAuth, allowlist fechada do Figma sem registro dinâmico) — nenhuma das
+duas ficou como código morto no repo, as duas foram deletadas depois
+da decisão de abandonar. Tentativa 3 (melhorar a API REST da parte 6
+com `content.json` — estrutura + texto real de cada nó, sem gastar
+chamada nova ao Figma) foi a escolha final do usuário, implementada e
+**validada de ponta a ponta com um arquivo real**: texto/estrutura
+genuínos extraídos (nada inventado pelo agente), `index-real.html`
+gerado do zero (não em cima do site com cópia inventada da parte 6).
+Depois de um `HTTP 429` real durante a validação, uma investigação na
+documentação oficial de rate limits do Figma revelou que `GET file`/
+`GET file nodes`/`GET images` dividem a MESMA cota (Tier 1), só ~6
+chamadas por MÊS pra uma conta sem assento Dev/Full pago — não por
+minuto. Três otimizações implementadas pra minimizar chamadas futuras
+(reaproveitar IDs já obtidos em vez de reconsultar o Figma, garantir
+que exportação de vários componentes do mesmo formato seja SEMPRE uma
+única chamada, logar os headers de rate limit da resposta), sem gastar
+NENHUMA chamada nova ao testar essas otimizações — combinado
+explicitamente: só volta a chamar o Figma depois do usuário confirmar
+o seat real dele no arquivo (Viewer/Collab vs Dev/Full).
+
+**Registrado como PENDÊNCIA EXPLÍCITA, não como "completa"**: Figma
+está implementado e tecnicamente funcional, mas bloqueado na prática
+pela cota do plano gratuito do Figma. Dois projetos reais do usuário
+prontos e parados esperando decisão sobre upgrade pro plano
+Professional do Figma: `food-products-site` e
+`natural-beauty-products-site`.
+
+---
+
+## Fase 5 — encerrada nesta sessão, com uma pendência registrada
+
+Partes 1 a 6 completas e validadas rodando de verdade (detalhes em
+cada seção acima): sandbox de código por projeto (Podman, isolamento
+de rede/filesystem confirmado com teste real) + criação automática de
+repositório privado no GitHub + `git_push` sempre atrás de confirmação
+de alto risco (validado com push real) + Base44 como caminho
+alternativo nunca escolhido sozinho pelo agente (parte 1-3); gráficos
+vetoriais SVG (parte 4); geração de slides `.pptx` (parte 5);
+extração de assets do Figma via API REST (parte 6). Duas decisões
+conscientes de escopo, não esquecimentos: **imagem realista** (raster,
+via API paga tipo Flux/GPT Image/Firefly) foi avaliada e o usuário
+decidiu não seguir por enquanto; **vídeo** foi descartado do escopo
+desta fase, não retomado sem pedido explícito.
+
+**Parte 7 (Figma — estrutura/conteúdo reais) fica como a ÚNICA
+pendência explícita da Fase 5** — não escondida, não maquiada de
+"completa": implementado, otimizado, validado tecnicamente, mas
+bloqueado na prática pela cota do plano gratuito do Figma (ver seção
+acima). Fase 5 encerra aqui com essa pendência registrada; retomar
+quando o usuário decidir sobre o upgrade de plano do Figma, ou quando
+confirmar que o seat atual já basta pra tentar de novo com mais
+cuidado com a cota.
