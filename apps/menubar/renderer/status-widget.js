@@ -1,15 +1,23 @@
 // Widget de status (Fase 4 parte 2, etapa 2) — data/hora sempre
 // disponíveis (não dependem de rede nem permissão nenhuma); clima e
-// localização só aparecem depois que `navigator.geolocation` (API do
-// PRÓPRIO Chromium, não um fetch — no macOS usa o Core Location do
-// sistema por baixo, mesma categoria de permissão do Painel de
-// Privacidade já usada por Calendar/Reminders/Notes) devolver
-// coordenadas, que então vão pro processo principal
-// (`window.sarah.weather`, ver preload.cjs/main-process.ts) buscar de
-// verdade na Open-Meteo (clima) + BigDataCloud (cidade/país). Se o
-// usuário negar a permissão, ou a API não existir, o widget continua
-// mostrando data/hora normalmente — só o clima/local ficam com uma
-// mensagem curta, nunca quebra o resto da tela.
+// localização vêm de `window.sarah.weather()` (main-process.ts), que
+// resolve os dois num único IPC — nem coordenadas nem permissão
+// nenhuma são pedidas por aqui.
+//
+// Ajuste 3, achado real: a primeira versão pedia a localização via
+// `navigator.geolocation` (Core Location do sistema, através do
+// Chromium) — a permissão do macOS era concedida sem problema, mas a
+// chamada em si falhava sempre com `GeolocationPositionError: Timeout
+// expired`, mesmo aumentando o timeout de 10s pra 25s. Investigado
+// (não só "tentado de nov"): é um bug antigo e conhecido do Electron
+// (github.com/electron/electron/issues/28443, entre outras) — o
+// provedor de localização por rede do Chromium exige uma
+// `GOOGLE_API_KEY` paga do Google Cloud pra funcionar de verdade, sem
+// ela falha nesse mesmo erro mesmo com a permissão do sistema
+// concedida. Decisão explícita do usuário (não escolhida sozinha):
+// trocar pra localização por IP no processo principal, sem chave paga
+// nem popup de permissão — ver `main-process.ts`, handler
+// `sarah:weather`.
 
 const timeEl = document.getElementById("status-time");
 const dateEl = document.getElementById("status-date");
@@ -50,41 +58,24 @@ function updateClock() {
 }
 
 /** Chamado uma vez, no carregamento da janela principal. */
-export function initStatusWidget() {
+export async function initStatusWidget() {
   updateClock();
   setInterval(updateClock, 15_000);
 
-  if (!navigator.geolocation) {
-    locationEl.textContent = "localização indisponível";
-    return;
+  try {
+    const result = await window.sarah.weather();
+    if (!result.ok) {
+      console.error(`[status-widget] sarah:weather falhou: ${result.error}`);
+      locationEl.textContent = "clima indisponível";
+      return;
+    }
+    if (typeof result.tempC === "number") {
+      const description = WEATHER_DESCRIPTIONS[result.weatherCode] ?? "";
+      weatherEl.textContent = `${Math.round(result.tempC)}°C${description ? " · " + description : ""}`;
+    }
+    locationEl.textContent = [result.city, result.country].filter(Boolean).join(", ") || "localização desconhecida";
+  } catch (err) {
+    console.error(`[status-widget] erro buscando clima/localização: ${err instanceof Error ? err.message : String(err)}`);
+    locationEl.textContent = "clima indisponível";
   }
-
-  navigator.geolocation.getCurrentPosition(
-    async (position) => {
-      const { latitude, longitude } = position.coords;
-      try {
-        const result = await window.sarah.weather(latitude, longitude);
-        if (!result.ok) {
-          locationEl.textContent = "clima indisponível";
-          return;
-        }
-        if (typeof result.tempC === "number") {
-          const description = WEATHER_DESCRIPTIONS[result.weatherCode] ?? "";
-          weatherEl.textContent = `${Math.round(result.tempC)}°C${description ? " · " + description : ""}`;
-        }
-        locationEl.textContent = [result.city, result.country].filter(Boolean).join(", ") || "localização desconhecida";
-      } catch {
-        locationEl.textContent = "clima indisponível";
-      }
-    },
-    (error) => {
-      // `PERMISSION_DENIED` (código 1) é o caso mais comum — usuário
-      // negou o popup de Localização do macOS. Os outros dois códigos
-      // (`POSITION_UNAVAILABLE`, `TIMEOUT`) são infraestrutura, não
-      // permissão, mas a mensagem só precisa deixar claro que o dado
-      // não veio, não precisa diferenciar todos os casos pro usuário.
-      locationEl.textContent = error.code === error.PERMISSION_DENIED ? "localização não autorizada" : "localização indisponível";
-    },
-    { timeout: 10_000, maximumAge: 10 * 60 * 1000 }
-  );
 }

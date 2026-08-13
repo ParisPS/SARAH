@@ -1,4 +1,4 @@
-import { app, Tray, Menu, BrowserWindow, nativeImage, dialog, ipcMain, screen, session, shell } from "electron";
+import { app, Tray, Menu, BrowserWindow, nativeImage, dialog, ipcMain, screen, shell } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unlink } from "node:fs/promises";
@@ -84,22 +84,19 @@ import { spawnSarahDaemon, type SarahDaemon, type ToolUsage } from "./sarah-daem
  * abaixo); microfone e teclado trocaram o emoji por ícone SVG
  * (`renderer/index.html`, mesma paleta/traço dos glifos de tarefa que
  * já existiam); novo widget discreto de data/hora/clima/localização
- * no canto — localização vem da API de geolocalização do Chromium
- * (`navigator.geolocation` no renderer, que no macOS usa o Core
- * Location do sistema por baixo — MESMA categoria de permissão do
- * Painel de Privacidade usada por Calendar/Reminders/Notes, só que
- * disparada pelo próprio Electron em vez de um `osascript` filho,
- * porque não existe bridge JXA pra localização como existe pro
- * EventKit) e clima vem da API pública da Open-Meteo (sem chave, uso
- * não-comercial — conferido na documentação atual antes de usar) +
- * geocodificação reversa (coordenadas → cidade/país) via a API
- * gratuita client-side da BigDataCloud (`api-bdc.net`, também sem
- * chave). As duas chamadas de rede rodam AQUI, no processo principal
- * — nunca no renderer, que continua com CSP `default-src 'self'` sem
- * `connect-src` liberado pra nenhum host externo; o renderer só pede
- * as COORDENADAS (API do navegador, não é fetch) e delega a busca de
- * verdade pro processo principal via IPC, mesmo padrão já usado pra
- * tudo que fala com o mundo fora desta janela.
+ * no canto — localização por IP via `ipwho.is` (sem chave, HTTPS,
+ * também devolve cidade/país no mesmo request) e clima via Open-Meteo
+ * (sem chave, uso não-comercial — as duas confirmadas na documentação
+ * atual antes de usar), sempre chamadas AQUI no processo principal,
+ * nunca no renderer (CSP `default-src 'self'`, sem `connect-src`
+ * liberado pra host nenhum externo). Achado real, registrado com
+ * detalhe no comentário do handler `sarah:weather` abaixo: a primeira
+ * tentativa usava `navigator.geolocation` (Core Location do sistema,
+ * via Chromium) e a permissão do macOS funcionava, mas a chamada em
+ * si falhava sempre com timeout — bug antigo e conhecido do Electron,
+ * que exige uma `GOOGLE_API_KEY` paga pro provedor de localização por
+ * rede funcionar de verdade. Trocado por decisão explícita do usuário
+ * pra localização por IP, sem chave paga nem popup de permissão.
  */
 
 // Este processo (o do Electron) não precisa carregar `.env` — quem usa
@@ -360,16 +357,16 @@ app.whenReady().then(() => {
   // Sem ícone no Dock — é um app de menu bar, o Tray já é a UI.
   app.dock?.hide();
 
-  // Fase 4 parte 2, etapa 2: o Electron já nega TODA permissão do
-  // Chromium por padrão quando não há handler nenhum registrado — mas
-  // deixamos explícito (em vez de depender do default implícito) que
-  // só `geolocation` é permitida (pro widget de status), e só ela.
-  // Câmera/microfone do navegador nunca são pedidos por este app (a
-  // gravação de voz usa `sox`/`rec` via child_process, não
-  // `getUserMedia`), então continuam negados.
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(permission === "geolocation");
-  });
+  // Fase 4 parte 2, etapa 2, ajuste 3: chegou a existir aqui um
+  // `setPermissionRequestHandler` liberando só `geolocation`, pro
+  // widget de status via `navigator.geolocation`. Removido — essa
+  // API do Chromium se mostrou não-funcional nesta configuração
+  // (bug conhecido do Electron, ver comentário em cima do handler
+  // `sarah:weather`), então o widget passou a usar localização por
+  // IP (chamada de rede comum no processo principal, sem precisar de
+  // nenhuma permissão do Chromium). Nenhuma permissão do navegador é
+  // pedida por este app — o Electron já nega tudo por padrão sem
+  // handler nenhum registrado, comportamento correto de deixar assim.
 
   tray = new Tray(buildTrayIcon());
   tray.setToolTip("SARAH");
@@ -469,46 +466,59 @@ app.whenReady().then(() => {
   });
 
   /**
-   * Widget de status (Fase 4 parte 2, etapa 2) — recebe só as
-   * coordenadas (já obtidas no renderer via `navigator.geolocation`,
-   * que é uma API do navegador, não um fetch — por isso não esbarra
-   * no CSP) e faz as DUAS chamadas de rede de verdade aqui: clima
-   * (Open-Meteo, `current=temperature_2m,weather_code`, sem chave) e
-   * geocodificação reversa (BigDataCloud, endpoint client-side
-   * gratuito, também sem chave) em paralelo. Falha de qualquer uma
-   * das duas não derruba a outra — o widget mostra o que conseguiu.
+   * Widget de status (Fase 4 parte 2, etapa 2, ajuste 3 — reescrito
+   * depois de um achado real testando com o usuário). Versão original
+   * pedia a localização via `navigator.geolocation` no renderer (Core
+   * Location do sistema, via Chromium) — a PERMISSÃO era concedida
+   * sem problema (nenhum popup do macOS reaparecia depois da primeira
+   * vez), mas a chamada em si falhava sempre com
+   * `GeolocationPositionError: Timeout expired` (código 3), mesmo
+   * aumentando o timeout de 10s pra 25s. Investigado (não só
+   * "tentado de novo"): é um bug conhecido e antigo do Electron, sem
+   * correção definitiva até hoje — o provedor de localização por rede
+   * do Chromium exige uma `GOOGLE_API_KEY` (produto PAGO do Google
+   * Cloud) pra funcionar de verdade; sem ela, falha nesse mesmo erro
+   * mesmo com a permissão do sistema concedida (ver
+   * github.com/electron/electron/issues/28443, entre outras issues
+   * abertas há anos sobre o mesmo sintoma). Apresentado ao usuário
+   * como uma decisão real (não resolvido sozinho): trocar pra
+   * localização por IP, sem exigir chave paga nem popup de permissão
+   * nenhum — escolha explícita dele.
+   *
+   * `https://ipwho.is/` (sem parâmetro = usa o IP de quem chamou, ou
+   * seja, o IP público desta máquina) devolve cidade/país/latitude/
+   * longitude num único request, sem chave, HTTPS, 1000
+   * requisições/dia de cota gratuita (documentação atual conferida
+   * antes de trocar) — de quebra, elimina a necessidade da segunda
+   * chamada de geocodificação reversa (BigDataCloud) que a versão
+   * anterior fazia: a MESMA resposta já traz cidade/país E as
+   * coordenadas que a Open-Meteo precisa pro clima.
    */
-  ipcMain.handle("sarah:weather", async (_event, latitude: unknown, longitude: unknown) => {
-    const lat = Number(latitude);
-    const lon = Number(longitude);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      return { ok: false, error: "Coordenadas inválidas." };
-    }
+  ipcMain.handle("sarah:weather", async () => {
     try {
-      const [weatherResult, placeResult] = await Promise.allSettled([
-        fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=auto`
-        ).then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Open-Meteo respondeu ${res.status}`)))),
-        fetch(`https://api-bdc.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=pt`).then(
-          (res) => (res.ok ? res.json() : Promise.reject(new Error(`BigDataCloud respondeu ${res.status}`)))
-        ),
-      ]);
+      const placeRes = await fetch("https://ipwho.is/");
+      if (!placeRes.ok) throw new Error(`ipwho.is respondeu ${placeRes.status}`);
+      const place = await placeRes.json();
+      if (!place.success) throw new Error(place.message || "ipwho.is não conseguiu localizar este IP.");
 
-      const weather = weatherResult.status === "fulfilled" ? weatherResult.value : null;
-      const place = placeResult.status === "fulfilled" ? placeResult.value : null;
-
-      if (!weather && !place) {
-        const reason = weatherResult.status === "rejected" ? weatherResult.reason : placeResult.status === "rejected" ? placeResult.reason : null;
-        throw reason instanceof Error ? reason : new Error("Falha ao buscar clima/localização.");
+      let tempC: number | null = null;
+      let weatherCode: number | null = null;
+      if (typeof place.latitude === "number" && typeof place.longitude === "number") {
+        try {
+          const weatherRes = await fetch(
+            `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,weather_code&timezone=auto`
+          );
+          if (weatherRes.ok) {
+            const weather = await weatherRes.json();
+            tempC = weather?.current?.temperature_2m ?? null;
+            weatherCode = weather?.current?.weather_code ?? null;
+          }
+        } catch {
+          // Clima é best-effort — se falhar, ainda devolve cidade/país (ipwho.is já respondeu).
+        }
       }
 
-      return {
-        ok: true,
-        tempC: weather?.current?.temperature_2m ?? null,
-        weatherCode: weather?.current?.weather_code ?? null,
-        city: place?.city || place?.locality || null,
-        country: place?.countryName || null,
-      };
+      return { ok: true, tempC, weatherCode, city: place.city ?? null, country: place.country ?? null };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

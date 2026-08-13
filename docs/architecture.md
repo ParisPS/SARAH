@@ -3833,3 +3833,126 @@ microfone de ponta a ponta nos dois idiomas (português e inglês),
 confirmado funcionando pelo usuário.
 
 **Fase 4 (Voz) está completa — as duas etapas.**
+
+---
+
+## Decisões e bugs encontrados na Fase 4 (Voz), segunda etapa — ajuste 3 (mockup de referência, donut de risco, geolocalização por IP)
+
+Depois do ajuste 2, o usuário enviou um mockup visual de referência
+(imagem) com ajustes pontuais de composição/estilo do dashboard —
+tratados aqui, ainda dentro da mesma etapa (nada disso tinha sido
+commitado ainda).
+
+### Cards de conteúdo curto não devem esticar — `flex: 1` era a ferramenta errada pro problema errado
+
+O ajuste anterior (eliminar o vazio entre o dashboard e o rodapé)
+tinha feito TODO `.panel` usar `flex: 1`, dividindo a altura da coluna
+em partes iguais. Isso resolvia o vazio no nível de `#top` (container
+inteiro), mas criava um problema novo e diferente, só visível
+comparando com o mockup: cards com pouco conteúdo (Integrações, Risco)
+ficavam enormes, com espaço vazio DENTRO deles mesmos. Corrigido
+separando as duas responsabilidades: `#top` continua `flex: 1` (ocupa
+a janela inteira — isso não mudou), mas `.panel` voltou a ter altura
+de CONTEÚDO (`flex: 0 0 auto`), e é a `.dash-col` que centraliza o par
+de cards no meio do espaço da coluna (`justify-content: center`) — o
+fundo gradiente do próprio `#top` preenche qualquer sobra ao redor,
+então nunca mais volta a parecer um vazio "quebrado" (é parte da
+composição, não um bug).
+
+### Card de atividade: `height: 100%` também foi revertido
+
+Pelo mesmo motivo simétrico: o ajuste anterior esticava
+`#activity-chart` (`height: 100%`) pra preencher o painel inteiro —
+mas com o painel tendo `flex: 1`, isso fazia esse card específico
+crescer desproporcionalmente em relação aos outros três. Voltou a ter
+altura fixa e compacta (`height: 54px`), igual aos outros cards do
+mockup.
+
+### Gráfico de risco: donut real via `stroke-dasharray`, sem lib nova
+
+A barra horizontal (`#risk-bar`, dois `<div>` com `width` em %) virou
+um donut de verdade — duas `<circle>` SVG concêntricas, cada uma com
+`stroke-dasharray`/`stroke-dashoffset` representando a fração exata do
+círculo que aquele risco ocupa, giradas com um `<g transform="rotate(-90 ...)">`
+pra começar às 12h (leitura padrão de gráfico de pizza/donut) em vez
+de às 3h (onde um `<circle>` sem rotação começa a desenhar por
+padrão). Um `gap` pequeno (5 unidades de um total de ~251, só quando
+os dois segmentos existem de verdade) encurta cada arco e abre um
+respiro visual entre eles, com `stroke-linecap: round` arredondando as
+pontas — mesmo efeito do mockup. Texto centralizado por cima
+(`position: absolute` dentro de um wrapper `position: relative`)
+mostra a porcentagem de risco BAIXO em destaque + o rótulo "baixo
+risco" abaixo, e uma legenda com as duas cores (ciano/âmbar) fica
+embaixo do donut. Tamanho aumentado de 92px pra 122px depois de um
+segundo retoque pedido pelo usuário — no tamanho original a
+porcentagem central ficava visualmente comprimida.
+
+### Emojis removidos das listas (integrações e categorias)
+
+Pedido explícito do usuário comparando com o mockup, que usa só texto
++ indicador de cor — o mapa `ICONS` (emoji por integração) foi
+removido de `dashboard.js`, sem substituto (não é ícone SVG no lugar,
+é ausência mesmo, igual ao mockup). Aplicado tanto no painel de
+Status das Integrações quanto no de Atividade por Categoria, mesmo o
+pedido original mencionando só o primeiro — o mockup também não tem
+emoji nas categorias, então manter ali seria uma inconsistência nova.
+
+### Indicador "configurado": verde genérico trocado pela cor de acento
+
+A bolinha de status de cada integração usava um verde solto
+(`#4ade80`) fora da paleta do resto da interface — trocada pela MESMA
+cor de acento usada na esfera e nos outros destaques (`--accent-bright`),
+com um brilho sutil (`box-shadow` reaproveitando `--accent-glow`, que
+já tinha exatamente o mesmo RGB do acento).
+
+### Achado real, investigado a fundo: `navigator.geolocation` tem um bug antigo e não resolvido no Electron
+
+O widget de status (clima/localização) tinha sido implementado no
+ajuste anterior via `navigator.geolocation.getCurrentPosition` no
+renderer — a permissão de Localização do macOS era concedida sem
+problema (nenhum popup reaparecia depois da primeira vez), mas a
+chamada em si falhava sempre com `GeolocationPositionError: Timeout
+expired` (código 3), mesmo aumentando o timeout de 10s pra 25s.
+Investigado com uma busca real (não assumido "deve ser lentidão"): é
+um bug conhecido e antigo do Electron, com issues abertas há anos sem
+correção definitiva (`github.com/electron/electron/issues/28443`,
+entre outras com o mesmo sintoma exato) — o provedor de localização
+por REDE do Chromium (usado mesmo em desktop, inclusive macOS com Core
+Location por baixo) exige uma `GOOGLE_API_KEY` configurada, que é um
+produto PAGO do Google Cloud (billing ativado) além da cota gratuita.
+Sem essa chave, falha nesse mesmo erro, mesmo com a permissão do
+sistema concedida.
+
+Apresentado ao usuário como uma decisão real, não resolvido sozinho
+por trás das costas: três opções (trocar pra localização por IP sem
+popup; configurar uma `GOOGLE_API_KEY` paga; ou remover clima/
+localização do widget, ficando só com data/hora). Escolhida a
+localização por IP — decisão explícita do usuário.
+
+**Implementação nova**: `https://ipwho.is/` (sem parâmetro nenhum =
+usa o IP público de quem chamou), sem chave, HTTPS, 1000
+requisições/dia de cota gratuita (documentação atual conferida antes
+de trocar) — devolve cidade/país E latitude/longitude num ÚNICO
+request, o que também eliminou a necessidade da segunda chamada de
+geocodificação reversa (BigDataCloud) que a versão anterior fazia: a
+mesma resposta já tem tudo que a Open-Meteo precisa pro clima. O
+handler `sarah:weather` não recebe mais nenhum argumento — antes
+recebia coordenadas obtidas no renderer, agora resolve tudo sozinho no
+processo principal. `navigator.geolocation` e o
+`setPermissionRequestHandler` que liberava `geolocation` foram
+removidos do código — nenhuma permissão de navegador é mais pedida por
+este app.
+
+### Validação — de ponta a ponta, comparando com o mockup a cada rodada
+
+Sem acesso a clicar na janela a partir daqui: cada rodada de ajuste
+testada separadamente pelo usuário comparando com a imagem de
+referência, incluindo duas idas e voltas até acertar o tamanho dos
+cards de pouco conteúdo e o tamanho do donut, e uma investigação real
+(não só "tenta de novo") até a causa raiz do clima/localização não
+aparecerem — confirmado funcionando depois da troca pra IP.
+Conferência final, tela inteira comparada com o mockup: widget isolado
+sem sobrepor nenhum card, os quatro cards do tamanho certo, donut de
+risco legível com porcentagem central, sem emoji nas listas, indicador
+na cor de acento, microfone destacado, e clima/localização aparecendo
+— tudo confirmado pelo usuário.

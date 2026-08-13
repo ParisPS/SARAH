@@ -45,14 +45,15 @@ contextBridge.exposeInMainWorld("sarah", {
   awaitRecording: () => ipcRenderer.invoke("sarah:awaitRecording"),
   speak: (text, language) => ipcRenderer.invoke("sarah:speak", text, language),
   /**
-   * Widget de status (Fase 4 parte 2, etapa 2): `weather` recebe
-   * coordenadas já obtidas no renderer (`navigator.geolocation`) e
-   * devolve `{ ok, tempC, weatherCode, city, country }` — as chamadas
-   * de rede de verdade (Open-Meteo + BigDataCloud) rodam no processo
-   * principal, nunca aqui. `openLink` abre uma URL/caminho de arquivo
-   * real que apareceu numa resposta da SARAH (link clicável na área
-   * de legenda).
+   * Widget de status (Fase 4 parte 2, etapa 2, ajuste 3): `weather`
+   * não recebe nenhum argumento — localização vem por IP (`ipwho.is`)
+   * e clima da Open-Meteo, as duas chamadas de rede rodando inteiras
+   * no processo principal, nunca aqui (ver `main-process.ts` pro
+   * porquê de não ser mais via `navigator.geolocation`). Devolve
+   * `{ ok, tempC, weatherCode, city, country }`. `openLink` abre uma
+   * URL/caminho de arquivo real que apareceu numa resposta da SARAH
+   * (link clicável na área de legenda).
    */
-  weather: (latitude, longitude) => ipcRenderer.invoke("sarah:weather", latitude, longitude),
+  weather: () => ipcRenderer.invoke("sarah:weather"),
   openLink: (link) => ipcRenderer.invoke("sarah:openLink", link),
 });

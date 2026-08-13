@@ -27,6 +27,7 @@
         --muted-dim: #4a5f80;
         --card-border: #16233d;
         --danger: #f87171;
+        --risk-high: #f5b971;
       }
 
       html,
@@ -94,7 +95,17 @@
         grid-template-columns: 220px 1fr 220px;
         gap: 18px;
         align-items: stretch;
-        padding: 20px 22px 10px;
+        /* padding-top reserva espaço pro widget de status (pill
+           isolada, canto superior direito, fora deste grid) — achado
+           real testando com o usuário: com `#status-widget` em
+           `position: absolute` e o grid começando logo no topo, a
+           pill sobrepunha o card "Atividade por categoria". Em vez de
+           tentar "acertar" um deslocamento aproximado, o padding-top
+           é maior que a altura real da pill (~34px) + a folga do
+           `top: 14px` dela, garantindo ZERO sobreposição mesmo que o
+           conteúdo da pill mude de tamanho (ex.: texto de localização
+           mais longo não muda a ALTURA, só a largura). */
+        padding: 58px 22px 10px;
         background:
           radial-gradient(ellipse at center, rgba(60, 130, 246, 0.18) 0%, rgba(5, 7, 13, 0) 72%),
           var(--bg);
@@ -103,6 +114,19 @@
       .dash-col {
         display: flex;
         flex-direction: column;
+        /* Fase 4 parte 2, etapa 2, ajuste 3 — achado comparando com o
+           mockup de novo: `.panel` esticando com `flex: 1` (ajuste
+           anterior, pra eliminar o vazio ENTRE o dashboard e os
+           controles) fazia sentido pro container `#top` como um todo,
+           mas deixava os cards com POUCO conteúdo (Integrações, Risco)
+           enormes, com muito espaço vazio dentro deles mesmos — não é
+           o mesmo problema, e a correção certa é diferente: os cards
+           voltam a ter altura de conteúdo (`.panel` abaixo), e é a
+           COLUNA que centraliza o par de cards no meio do espaço
+           disponível — o fundo (gradiente do próprio `#top`) continua
+           preenchendo qualquer sobra, então nunca volta a parecer um
+           vazio "quebrado", é parte da composição. */
+        justify-content: center;
         gap: 14px;
         min-width: 0;
         min-height: 0;
@@ -128,18 +152,16 @@
         pointer-events: none;
       }
 
-      /* --- painéis do dashboard: cartões que agora crescem pra
-         dividir a altura da coluna (`flex: 1` cada) em vez de altura
-         fixa por conteúdo — é isso que faz o dashboard inteiro
-         acompanhar a esfera até perto do rodapé. O CONTEÚDO de cada
-         painel continua centralizado verticalmente (`.body` também
-         flex), não esticado, exceto o gráfico de atividade (ver
-         `#activity-chart` abaixo), que faz mais sentido preencher de
-         verdade. ----------------------------------------------------*/
+      /* --- painéis do dashboard: cartões com altura de CONTEÚDO
+         (`flex: 0 0 auto`, ajuste 3 — ver `.dash-col` acima pro porquê
+         de ter voltado atrás do `flex: 1` do ajuste anterior). O vazio
+         entre o dashboard e os controles continua resolvido, só que na
+         camada de cima (`#top` preenchendo a janela inteira) — os
+         cards em si não precisam mais esticar pra isso. ------------- */
       .panel {
         display: flex;
         flex-direction: column;
-        flex: 1;
+        flex: 0 0 auto;
         min-height: 0;
         background: linear-gradient(180deg, rgba(19, 31, 54, 0.8) 0%, rgba(9, 14, 25, 0.8) 100%);
         border: 1px solid var(--card-border);
@@ -163,9 +185,6 @@
         justify-content: center;
         min-height: 0;
       }
-      #panel-activity .body {
-        justify-content: stretch;
-      }
 
       /* status das integrações */
       .integration-row {
@@ -182,8 +201,11 @@
         flex-shrink: 0;
       }
       .integration-row .dot.ok {
-        background: #4ade80;
-        box-shadow: 0 0 5px 0 rgba(74, 222, 128, 0.7);
+        /* Verde genérico trocado pela cor de acento (Fase 4 parte 2,
+           etapa 2, ajuste 2) — o mesmo ciano usado na esfera/painéis
+           em vez de um verde de "status" fora da paleta da interface. */
+        background: var(--accent-bright);
+        box-shadow: 0 0 5px 0 var(--accent-glow);
       }
       .integration-row .dot.off {
         background: #6b7280;
@@ -197,25 +219,54 @@
         color: var(--muted);
       }
 
-      /* risco */
-      #risk-bar {
+      /* risco — Fase 4 parte 2, etapa 2, ajuste 2: virou um donut de
+         verdade (dois arcos reais, via `stroke-dasharray` em duas
+         `<circle>` sobrepostas — sem lib de gráfico nova), no lugar da
+         barra horizontal anterior, seguindo o mockup de referência.
+         `dashboard.js` (`renderRisk`) monta o SVG; aqui só o estilo. */
+      .risk-donut-wrap {
+        position: relative;
+        /* Aumentado (ajuste 3, comparando com o mockup) — no tamanho
+           anterior (92px) a porcentagem central ficava comprimida
+           demais pro texto. */
+        width: 122px;
+        height: 122px;
+        margin: 4px auto;
+        flex-shrink: 0;
+      }
+      #risk-donut {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .risk-donut-center {
+        position: absolute;
+        inset: 0;
         display: flex;
-        height: 14px;
-        border-radius: 4px;
-        overflow: hidden;
-        background: #10192c;
-        margin-bottom: 6px;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
       }
-      #risk-bar .low {
-        background: var(--accent);
+      .risk-donut-pct {
+        font-size: 25px;
+        font-weight: 700;
+        color: var(--ink);
+        font-variant-numeric: tabular-nums;
+        line-height: 1;
       }
-      #risk-bar .high {
-        background: #f5b971;
+      .risk-donut-label {
+        margin-top: 4px;
+        font-size: 9px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
       }
       .risk-legend {
         display: flex;
-        flex-direction: column;
-        gap: 4px;
+        justify-content: center;
+        gap: 14px;
+        margin-top: 10px;
         font-size: 11px;
         color: #9fb4d4;
         font-variant-numeric: tabular-nums;
@@ -228,10 +279,10 @@
         margin-right: 4px;
       }
       .risk-legend .swatch.low {
-        background: var(--accent);
+        background: var(--accent-bright);
       }
       .risk-legend .swatch.high {
-        background: #f5b971;
+        background: var(--risk-high);
       }
 
       /* atividade por categoria */
@@ -268,14 +319,17 @@
         font-variant-numeric: tabular-nums;
       }
 
-      /* atividade recente (gráfico) — Fase 4 parte 2, etapa 2: agora
-         preenche a altura real do painel (`preserveAspectRatio="none"`
-         já fazia o SVG esticar; só faltava a CSS não travar em 46px
-         fixos, que era o que sobrava do valor usado só pro viewBox). */
+      /* atividade recente (gráfico) — Fase 4 parte 2, etapa 2, ajuste
+         2: voltou a ter altura FIXA e compacta (pedido explícito do
+         usuário, comparando com o mockup — todos os 4 cards devem
+         ficar do MESMO tamanho, não um esticando mais que os outros
+         conforme o conteúdo). A tentativa anterior (`height: 100%`,
+         preenchendo o painel inteiro) fazia esse card específico
+         "crescer" de um jeito visualmente diferente dos outros três. */
       #activity-chart {
         display: block;
         width: 100%;
-        height: 100%;
+        height: 54px;
       }
 
       .empty-panel {
@@ -348,37 +402,57 @@
         background: #143059;
       }
 
-      /* --- widget de status (Fase 4 parte 2, etapa 2): data/hora
-         sempre disponíveis (não dependem de rede/permissão); clima e
-         localização aparecem assim que a Geolocalização do sistema for
-         autorizada e as chamadas (Open-Meteo + BigDataCloud, ver
-         `main-process.ts`) responderem. Canto discreto, não compete
-         com a esfera. ------------------------------------------------*/
+      /* --- widget de status (Fase 4 parte 2, etapa 2, ajuste 2 —
+         segue o mockup de referência): pill ISOLADA no canto superior
+         direito, linha única com divisores finos entre grupos — antes
+         eram duas linhas empilhadas dentro de uma área sem fundo
+         próprio, que colidia visualmente com o card ao lado (ver
+         `padding-top` de `#top` acima, que reserva o espaço). Data/hora
+         sempre disponíveis (não dependem de rede nem permissão
+         nenhuma); clima e localização vêm de uma única chamada IPC
+         (`window.sarah.weather()`, localização por IP + Open-Meteo,
+         ver `main-process.ts` — achado real registrado lá sobre por
+         que não é mais via geolocalização do sistema) — até responder,
+         mostram um texto neutro em vez de ficarem em branco. --------*/
       #status-widget {
         position: absolute;
         top: 14px;
         right: 20px;
-        padding: 6px 12px;
-        text-align: right;
-        font-size: 10.5px;
-        color: var(--muted);
-        line-height: 1.5;
-        pointer-events: none;
         z-index: 2;
-      }
-      .status-line {
         display: flex;
-        justify-content: flex-end;
-        gap: 7px;
+        align-items: center;
+        gap: 9px;
+        padding: 7px 15px;
+        border-radius: 20px;
+        background: rgba(11, 19, 34, 0.78);
+        border: 1px solid var(--card-border);
+        font-size: 11px;
+        color: var(--muted);
         font-variant-numeric: tabular-nums;
         letter-spacing: 0.02em;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      #status-widget .sep {
+        width: 1px;
+        height: 11px;
+        background: var(--card-border);
+        flex-shrink: 0;
       }
       #status-time {
-        color: var(--accent-bright);
+        color: var(--ink);
         font-weight: 600;
       }
-      #status-weather {
+      #status-weather-wrap {
+        display: flex;
+        align-items: center;
+        gap: 4px;
         color: var(--accent-bright);
+      }
+      #status-weather-wrap svg {
+        width: 12px;
+        height: 12px;
+        flex-shrink: 0;
       }
       #status-location {
         color: var(--muted);
@@ -587,6 +661,19 @@
         opacity: 0.4;
         cursor: default;
       }
+      /* Microfone: destacado com a cor de acento por padrão (não só no
+         hover) — é o método de entrada primário desta interface (ver
+         mockup de referência), então o botão precisa ler como
+         "principal" mesmo em repouso, diferente do ícone de teclado
+         (secundário, contorno neutro). */
+      #micBtn {
+        border-color: var(--accent);
+        color: var(--accent-bright);
+        box-shadow: 0 0 10px var(--accent-glow);
+      }
+      #micBtn:hover {
+        border-color: var(--accent-bright);
+      }
       /* Microfone GRAVANDO: vermelho pulsante — feedback claro além da
          cor "ouvindo" da própria esfera, pro botão em si já deixar
          óbvio que um clique de novo vai PARAR a gravação. `currentColor`
@@ -665,15 +752,19 @@
     </style>
   </head>
   <body>
-    <div id="status-widget" class="hud-corners">
-      <div class="status-line status-datetime">
-        <span id="status-time">--:--</span>
-        <span id="status-date">--/--</span>
-      </div>
-      <div class="status-line status-place">
+    <div id="status-widget">
+      <span id="status-time">--:--</span>
+      <span id="status-date">--/--</span>
+      <span class="sep"></span>
+      <span id="status-weather-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="4.5"></circle>
+          <circle cx="12" cy="12" r="9" opacity="0.35"></circle>
+        </svg>
         <span id="status-weather">--°C</span>
-        <span id="status-location">localização não disponível</span>
-      </div>
+      </span>
+      <span class="sep"></span>
+      <span id="status-location">localização não disponível</span>
     </div>
 
     <div id="top">

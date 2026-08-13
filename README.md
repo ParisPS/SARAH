@@ -147,20 +147,28 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   nunca no daemon — é plumbing de UI local, não uma tool que o agente
   decide chamar, então não passa pelo Gateway. Ver `docs/architecture.md`
   pros achados reais de cada etapa (captura de mic confiável via
-  `sox`/`rec`, permissão de Localização do Chromium pro widget de
-  status, bug do link clicável com crase de markdown, entre outros).
-- **Dashboard preenche a janela inteira, sem espaço vazio**: os 4
-  painéis-cartão crescem junto com a esfera até perto do rodapé. A
-  área de legenda abaixo da esfera ganhou um propósito real — mostra a
-  última resposta e, quando ela contém uma URL ou caminho de arquivo
-  real (ex.: um SVG que a SARAH acabou de criar), um botão clicável
-  que abre o link/arquivo direto, sem precisar abrir o painel de
-  Histórico. Um widget discreto de canto mostra data/hora sempre, e
-  clima/localização quando a permissão de Localização do macOS é
-  concedida (Open-Meteo + geocodificação reversa BigDataCloud, as duas
-  sem chave, chamadas sempre do processo principal — nunca do
-  renderer). Ícones de microfone/teclado viraram SVG monocromático, no
-  mesmo traço/paleta do resto da interface.
+  `sox`/`rec`, bug antigo e conhecido do Electron em
+  `navigator.geolocation` — timeout constante sem uma `GOOGLE_API_KEY`
+  paga, mesmo com a permissão do macOS concedida —, bug do link
+  clicável com crase de markdown, entre outros).
+- **Dashboard preenche a janela inteira, sem espaço vazio, seguindo um
+  mockup de referência**: a esfera + os 4 painéis-cartão (do tamanho
+  do próprio conteúdo, centralizados na coluna — não esticados) ocupam
+  a janela inteira, sem faixa vazia antes dos controles. A área de
+  legenda abaixo da esfera mostra a última resposta e, quando ela
+  contém uma URL ou caminho de arquivo real (ex.: um SVG que a SARAH
+  acabou de criar), um botão clicável que abre o link/arquivo direto,
+  sem precisar abrir o painel de Histórico. O painel de risco virou um
+  donut de verdade (dois arcos reais via SVG, porcentagem no centro),
+  as listas perderam os emojis (só texto + indicador), e o indicador
+  de "configurado" usa a mesma cor de acento da esfera. Um widget de
+  canto (pill isolada) mostra data/hora sempre, e clima/localização
+  via IP (`ipwho.is`, sem chave, sem popup — troca feita depois do bug
+  do `navigator.geolocation` acima) + Open-Meteo, chamadas sempre do
+  processo principal, nunca do renderer. Ícones de microfone/teclado
+  viraram SVG monocromático, no mesmo traço/paleta do resto da
+  interface — o de microfone com destaque de cor por padrão (é o
+  método de entrada primário).
 - **Validado:** terminal revalidado como idêntico depois da
   refatoração do Gateway; protocolo do daemon (tools, confirmação de
   alto risco, histórico, dashboard) testado isolado, sem Electron no
@@ -355,10 +363,9 @@ Se duas tarefas rodarem na mesma resposta, a segunda animação só
 começa depois que a primeira termina. Peça pra criar um SVG (Fase 5)
 e veja a legenda mostrar um chip clicável com o caminho do arquivo —
 clique abre direto, sem passar pelo Histórico. O canto da tela mostra
-data/hora sempre, e clima/localização depois de autorizar o popup de
-Localização do macOS na primeira vez. Botão direito no ícone →
-"Histórico..." abre uma janela com a conversa completa e as últimas
-ações do Gateway.
+uma pill isolada com data/hora sempre, e clima/localização por IP
+(sem popup nenhum). Botão direito no ícone → "Histórico..." abre uma
+janela com a conversa completa e as últimas ações do Gateway.
 
 **Fase 5**: `cria um site estático simples chamado teste` (chama
 `code.create_project` + `code.write_file`, baixo risco — cria a pasta

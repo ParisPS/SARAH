@@ -5,14 +5,11 @@
 // uma "confiança" inventada) e três agregações reais do audit log
 // (`@sarah/audit`). Nenhum painel decorativo — se não tem fonte real,
 // não existe aqui.
-
-const ICONS = {
-  "sarah-apple-calendar": "📅",
-  "sarah-apple-reminders": "✅",
-  "sarah-notion": "🗓️",
-  "sarah-gmail": "✉️",
-  "sarah-apple-notes": "📝",
-};
+//
+// Fase 4 parte 2, etapa 2, ajuste 2: os emojis ao lado de cada nome
+// (integrações e categorias) saíram — pedido explícito comparando com
+// o mockup de referência, que usa só texto + indicador de cor. O mapa
+// `ICONS` que existia aqui foi removido (não sobrou nenhum uso).
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -30,11 +27,62 @@ function renderIntegrations(container, integrations) {
   for (const integ of integrations) {
     const row = el("div", "integration-row");
     row.appendChild(el("span", `dot ${integ.configured ? "ok" : "off"}`));
-    row.appendChild(el("span", "name", `${ICONS[integ.id] ?? ""} ${integ.label}`));
+    row.appendChild(el("span", "name", integ.label));
     row.appendChild(el("span", "detail", integ.configured ? "" : "não configurada"));
     row.title = integ.detail;
     container.appendChild(row);
   }
+}
+
+/**
+ * Donut de verdade (Fase 4 parte 2, etapa 2, ajuste 2 — antes era uma
+ * barra horizontal) — dois arcos via `stroke-dasharray` em duas
+ * `<circle>` concêntricas, sem biblioteca de gráfico nova. Cada arco é
+ * ENCURTADO por `gap` unidades (raio do círculo em unidades de
+ * viewBox, não pixels) pra abrir um respiro visível entre os dois
+ * segmentos — só quando os dois existem de verdade (100%/0% não tem
+ * gap nenhum, senão o círculo inteiro ficaria com uma mordida sem
+ * sentido). `stroke-linecap: round` (CSS) arredonda as pontas de cada
+ * arco, mesmo efeito do mockup de referência.
+ */
+function buildRiskDonut(lowPct, highPct) {
+  const size = 100;
+  const r = 40;
+  const strokeWidth = 11;
+  const circumference = 2 * Math.PI * r;
+  const hasBothSegments = lowPct > 0 && highPct > 0;
+  const gap = hasBothSegments ? 5 : 0;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("id", "risk-donut");
+  svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+
+  // Gira o grupo inteiro pra o primeiro arco começar às 12h (padrão
+  // visual de gráfico de pizza/donut) em vez de às 3h, que é onde um
+  // `<circle>` sem rotação começa a desenhar o traço por padrão.
+  const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+  group.setAttribute("transform", `rotate(-90 ${size / 2} ${size / 2})`);
+
+  function segment(pct, offset, color) {
+    const raw = (pct / 100) * circumference;
+    const length = Math.max(0, raw - gap);
+    const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    circle.setAttribute("cx", String(size / 2));
+    circle.setAttribute("cy", String(size / 2));
+    circle.setAttribute("r", String(r));
+    circle.setAttribute("fill", "none");
+    circle.setAttribute("stroke", color);
+    circle.setAttribute("stroke-width", String(strokeWidth));
+    circle.setAttribute("stroke-linecap", "round");
+    circle.setAttribute("stroke-dasharray", `${length} ${circumference - length}`);
+    circle.setAttribute("stroke-dashoffset", String(-offset));
+    return circle;
+  }
+
+  if (lowPct > 0) group.appendChild(segment(lowPct, 0, "var(--accent-bright)"));
+  if (highPct > 0) group.appendChild(segment(highPct, (lowPct / 100) * circumference, "var(--risk-high)"));
+  svg.appendChild(group);
+  return svg;
 }
 
 function renderRisk(container, riskCounts) {
@@ -45,24 +93,24 @@ function renderRisk(container, riskCounts) {
     return;
   }
   const lowPct = (riskCounts.low / total) * 100;
-  const highPct = (riskCounts.high / total) * 100;
+  const highPct = 100 - lowPct;
 
-  const bar = el("div");
-  bar.id = "risk-bar";
-  const lowSeg = el("div", "low");
-  lowSeg.style.width = `${lowPct}%`;
-  const highSeg = el("div", "high");
-  highSeg.style.width = `${highPct}%`;
-  bar.append(lowSeg, highSeg);
+  const wrap = el("div", "risk-donut-wrap");
+  wrap.appendChild(buildRiskDonut(lowPct, highPct));
+
+  const center = el("div", "risk-donut-center");
+  center.appendChild(el("div", "risk-donut-pct", `${Math.round(lowPct)}%`));
+  center.appendChild(el("div", "risk-donut-label", "baixo risco"));
+  wrap.appendChild(center);
 
   const legend = el("div", "risk-legend");
   const lowLabel = el("span");
-  lowLabel.innerHTML = `<span class="swatch low"></span>baixo · ${riskCounts.low} (${lowPct.toFixed(0)}%)`;
+  lowLabel.innerHTML = `<span class="swatch low"></span>baixo · ${riskCounts.low}`;
   const highLabel = el("span");
-  highLabel.innerHTML = `<span class="swatch high"></span>alto · ${riskCounts.high} (${highPct.toFixed(0)}%)`;
+  highLabel.innerHTML = `<span class="swatch high"></span>alto · ${riskCounts.high}`;
   legend.append(lowLabel, highLabel);
 
-  container.append(bar, legend);
+  container.append(wrap, legend);
 }
 
 function renderCategories(container, categoryCounts) {
@@ -74,8 +122,7 @@ function renderCategories(container, categoryCounts) {
   const max = Math.max(...categoryCounts.map((c) => c.count));
   for (const cat of categoryCounts) {
     const row = el("div", "category-row");
-    const label = ICONS[cat.server] ? `${ICONS[cat.server]} ${cat.server.replace("sarah-", "")}` : cat.server;
-    row.appendChild(el("span", "label", label));
+    row.appendChild(el("span", "label", cat.server.replace("sarah-", "")));
     const track = el("div", "track");
     const fill = el("div", "fill");
     fill.style.width = `${(cat.count / max) * 100}%`;
