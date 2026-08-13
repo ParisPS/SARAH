@@ -59,10 +59,14 @@ const hologram = createHologram(document.getElementById("hologram"), {
 refreshDashboard();
 
 /**
- * Idioma de SAÍDA (voz da SARAH) — Fase 4 parte 2. Independente do
- * idioma que o usuário fala/digita PRA ela, que é sempre
- * auto-detectado pelo STT (ver @sarah/voice) — os dois nunca precisam
- * bater. "pt" por padrão.
+ * Idioma de SAÍDA — Fase 4 parte 2, ajuste 4: controla o TEXTO da
+ * resposta (via `systemPrompt`, ver `sendPrompt`/`packages/core`) E a
+ * voz que lê ele (`window.sarah.speak`), sempre os dois juntos —
+ * achado real: antes só a voz trocava, o texto continuava saindo no
+ * idioma que o modelo escolhesse sozinho, lido com sotaque errado.
+ * Independente do idioma que o usuário fala/digita PRA ela, que é
+ * sempre auto-detectado pelo STT (ver @sarah/voice) — os dois nunca
+ * precisam bater. "pt" por padrão.
  */
 let outputLanguage = "pt";
 for (const btn of langButtons) {
@@ -101,6 +105,41 @@ function extractLink(text) {
 function shortenLink(link) {
   if (link.length <= 46) return link;
   return `${link.slice(0, 22)}…${link.slice(-20)}`;
+}
+
+/**
+ * Versão da resposta que vai pro TTS (Fase 4 (Voz), parte 2, ajuste 4)
+ * — bug real corrigido: mandar o texto da resposta pro `say` sem
+ * tratamento nenhum fazia URLs/caminhos de arquivo serem lidos
+ * CARACTERE POR CARACTERE (ex.: "h-t-t-p-s dois pontos barra
+ * barra..."), sem sentido nenhum em voz alta. Etapa determinística de
+ * limpeza ANTES do TTS — não depende do modelo "lembrar" de resumir
+ * sozinho, mesmo princípio de sempre deste projeto (preferências/
+ * idioma injetados sempre, nunca uma decisão que o modelo pode
+ * esquecer). Duas versões do mesmo conteúdo a partir daqui: a que vai
+ * pra TELA (`showStageResponse`, texto original, link completo e
+ * clicável) e a que vai pro `say` (esta função, resumida) — nunca a
+ * mesma string nos dois lugares quando há link/caminho/id técnico.
+ *
+ * Reusa os mesmos padrões de URL/caminho já usados pro chip clicável
+ * (globais aqui, pra substituir TODAS as ocorrências, não só a
+ * primeira) + um padrão extra pra qualquer outro token técnico longo
+ * que sobrar (hash de commit, UUID, slug de projeto) — heurística:
+ * 20+ caracteres sem espaço, contendo pelo menos um caractere que uma
+ * palavra normal em português/inglês não teria (dígito, `.`, `_`,
+ * `-`), pra não confundir com uma palavra grande legítima.
+ */
+const LONG_ID_PATTERN = /\b[a-zA-Z0-9][a-zA-Z0-9._-]{19,}\b/g;
+
+function sanitizeForSpeech(text) {
+  let speech = text
+    .replace(new RegExp(URL_PATTERN.source, "g"), "o link")
+    .replace(new RegExp(PATH_PATTERN.source, "g"), "o arquivo")
+    .replace(LONG_ID_PATTERN, (match) => (/[0-9._-]/.test(match) ? "um identificador" : match));
+  // Limpa espaços duplicados e espaço sobrando antes de pontuação,
+  // que sobram depois das substituições acima.
+  speech = speech.replace(/\s{2,}/g, " ").replace(/\s+([.,;:!?])/g, "$1").trim();
+  return speech;
 }
 
 /** Estado passageiro ("🎙 ouvindo...", "💭 pensando...") — some assim que vira uma resposta de verdade. */
@@ -166,6 +205,11 @@ function updateControlsDisabled() {
  * index.html) — a conversa completa fica só no painel de histórico
  * (`sarah:ask`, no processo principal, já grava lá; ver
  * `main-process.ts`). Aqui só cuida do holograma e da fala.
+ *
+ * `outputLanguage` vai junto no `ask()` (ajuste 4) — o agente escreve
+ * a resposta INTEIRA nesse idioma (ver `packages/core/src/index.ts`),
+ * não é só a voz que muda depois. Antes disso, o toggle só trocava a
+ * voz do `say`, deixando texto e voz em idiomas diferentes.
  */
 async function sendPrompt(prompt) {
   if (!prompt) return;
@@ -175,7 +219,7 @@ async function sendPrompt(prompt) {
   showStageStatus("💭 pensando...");
 
   try {
-    const result = await window.sarah.ask(prompt);
+    const result = await window.sarah.ask(prompt, outputLanguage);
     const responseText = result.ok ? result.text || "" : result.error;
 
     if (result.ok && result.tools) {
@@ -189,7 +233,7 @@ async function sendPrompt(prompt) {
 
     if (responseText) {
       showStageResponse(responseText);
-      await window.sarah.speak(responseText, outputLanguage);
+      await window.sarah.speak(sanitizeForSpeech(responseText), outputLanguage);
     } else {
       showStageHint();
     }

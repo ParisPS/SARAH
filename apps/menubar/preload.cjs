@@ -12,12 +12,14 @@ contextBridge.exposeInMainWorld("sarah", {
   /**
    * Envia um prompt pro processo principal (que chama
    * `SarahSession.ask()` de @sarah/core) e espera a resposta
-   * completa. Devolve `{ ok: true, text, tools }` (tools: lista de
-   * `{toolName, risk}` usadas nesse turno, pro selo discreto) ou
-   * `{ ok: false, error }` — nunca lança, pra o renderer não precisar
-   * de try/catch.
+   * completa. `outputLanguage` ("pt"/"en") vai até o systemPrompt do
+   * agente (Fase 4 (Voz), parte 2, ajuste 4) — o TEXTO da resposta sai
+   * nesse idioma, não só a voz que lê ele depois. Devolve
+   * `{ ok: true, text, tools }` (tools: lista de `{toolName, risk}`
+   * usadas nesse turno, pro selo discreto) ou `{ ok: false, error }` —
+   * nunca lança, pra o renderer não precisar de try/catch.
    */
-  ask: (prompt) => ipcRenderer.invoke("sarah:ask", prompt),
+  ask: (prompt, outputLanguage) => ipcRenderer.invoke("sarah:ask", prompt, outputLanguage),
   /** Últimas `limit` decisões do Gateway (painel de histórico). */
   history: (limit) => ipcRenderer.invoke("sarah:history", limit),
   /** Dados reais do dashboard (status de integrações + agregações do audit log). */

@@ -391,10 +391,16 @@ app.whenReady().then(() => {
   const daemonScriptPath = join(here, "daemon.ts");
   daemon = spawnSarahDaemon(tsxBinPath, daemonScriptPath, confirmViaDialog);
 
-  ipcMain.handle("sarah:ask", async (_event, prompt: unknown) => {
+  ipcMain.handle("sarah:ask", async (_event, prompt: unknown, outputLanguage: unknown) => {
     if (!daemon) return { ok: false, error: "Sessão da SARAH ainda não foi iniciada." };
     const promptText = String(prompt);
-    const result = await daemon.ask(promptText);
+    // Fase 4 (Voz), parte 2, ajuste 4: idioma escolhido no toggle
+    // PT/EN da interface — repassado até o systemPrompt do agente (ver
+    // `sarah-daemon.ts`/`daemon.ts`/`@sarah/core`), não só a voz do
+    // TTS. Valor fora de "pt"/"en" (ex.: ausente) vira `undefined`,
+    // que preserva o comportamento de sempre (sem instrução de idioma).
+    const language = outputLanguage === "en" || outputLanguage === "pt" ? outputLanguage : undefined;
+    const result = await daemon.ask(promptText, language);
     // Log da conversa (Fase 4 parte 2) — único lugar que vê prompt E
     // resultado juntos, sem IPC extra. Guarda ANTES de devolver pro
     // renderer, pra `sarah:conversationHistory` já enxergar este turno

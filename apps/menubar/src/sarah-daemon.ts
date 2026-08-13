@@ -49,7 +49,13 @@ export interface DashboardData {
 }
 
 export interface SarahDaemon {
-  ask(prompt: string): Promise<AskResult>;
+  /**
+   * `outputLanguage` ("pt"/"en", opcional) — Fase 4 (Voz), parte 2,
+   * ajuste 4: repassado até `session.ask()` (dentro do daemon filho),
+   * que injeta a instrução de idioma no `systemPrompt`. Omitido =
+   * comportamento de sempre, sem instrução nenhuma de idioma.
+   */
+  ask(prompt: string, outputLanguage?: "pt" | "en"): Promise<AskResult>;
   history(limit?: number): Promise<HistoryEntry[]>;
   dashboard(): Promise<DashboardData>;
   /**
@@ -146,11 +152,11 @@ export function spawnSarahDaemon(tsxBinPath: string, daemonScriptPath: string, c
     }
   });
 
-  function ask(prompt: string): Promise<AskResult> {
+  function ask(prompt: string, outputLanguage?: "pt" | "en"): Promise<AskResult> {
     const id = randomUUID();
     return new Promise((resolve) => {
       pendingAsks.set(id, resolve);
-      sendToChild({ type: "ask", id, prompt });
+      sendToChild({ type: "ask", id, prompt, outputLanguage });
     });
   }
 

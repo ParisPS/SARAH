@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as readline from "node:readline";
 import { randomUUID } from "node:crypto";
-import { createSarahSession } from "@sarah/core";
+import { createSarahSession, type OutputLanguage } from "@sarah/core";
 import type { ConfirmFn } from "@sarah/permissions";
 
 /**
@@ -78,6 +78,14 @@ rl.on("line", (line) => {
   if (msg.type === "ask") {
     const id = String(msg.id);
     const prompt = String(msg.prompt ?? "");
+    // Fase 4 (Voz), parte 2, ajuste 4: idioma de SAÍDA escolhido no
+    // toggle PT/EN de `apps/menubar` — repassado direto pra
+    // `session.ask()`, que injeta no `systemPrompt` (ver
+    // `packages/core/src/index.ts`). `undefined` (campo ausente ou
+    // valor não reconhecido) preserva o comportamento de sempre —
+    // nenhuma instrução de idioma é injetada.
+    const outputLanguage: OutputLanguage | undefined =
+      msg.outputLanguage === "en" || msg.outputLanguage === "pt" ? msg.outputLanguage : undefined;
     (async () => {
       try {
         let text = "";
@@ -86,7 +94,7 @@ rl.on("line", (line) => {
         // vez no turno (ex.: duas chamadas a create_note), o selo
         // mostra ela uma vez só, não repetida.
         const toolsSeen = new Map<string, { toolName: string; risk: string }>();
-        for await (const event of session.ask(prompt)) {
+        for await (const event of session.ask(prompt, outputLanguage)) {
           if (event.type === "text") {
             text += event.text;
           } else {

@@ -309,6 +309,34 @@ const GIT_WORKFLOW_POLICY_TEXT =
   "sozinho — não existe tool de merge aqui de propósito; depois de aberto, o PR fica esperando o " +
   "usuário revisar e mesclar pelo GitHub.";
 
+/**
+ * Fase 4 (Voz), parte 2, ajuste 4 — bug real corrigido: o toggle PT/EN
+ * de `apps/menubar` só trocava a VOZ do TTS (`say -v Luciana`/`say -v
+ * Samantha`), mas o TEXTO da resposta continuava saindo no idioma que
+ * o modelo escolhesse sozinho (geralmente o idioma do pedido) — ou
+ * seja, pedir algo em português com o toggle em EN produzia texto em
+ * português lido com sotaque/pronúncia de inglês, sem fazer sentido
+ * nenhum. Causa raiz: nada dizia pro MODELO qual idioma usar na
+ * resposta — só a camada de voz sabia do toggle. Corrigido injetando
+ * o idioma escolhido no `systemPrompt` de CADA chamada a `query()`,
+ * mesmo mecanismo já usado pras preferências da Fase 2 (determinístico,
+ * sem cache, buscado/montado a cada `ask()` — nunca uma decisão que o
+ * modelo precisa "lembrar" de tomar sozinho). Isso muda o TEXTO da
+ * resposta inteira (tela E voz vêm do mesmo texto, ver `renderer.js`),
+ * não só o áudio — os dois SEMPRE batem no mesmo idioma agora.
+ */
+function buildOutputLanguageText(outputLanguage: OutputLanguage | undefined): string | undefined {
+  if (!outputLanguage) return undefined;
+  const languageLabel = outputLanguage === "en" ? "INGLÊS (en-US)" : "PORTUGUÊS (pt-BR)";
+  return (
+    `IDIOMA DA RESPOSTA: escreva sua resposta final inteira em ${languageLabel}, do início ao fim — ` +
+    "mesmo que o pedido do usuário tenha sido feito em outro idioma. A ENTRADA pode vir em qualquer " +
+    "idioma (você já entende os dois normalmente), mas a SAÍDA — o texto que você escreve como " +
+    "resposta, que também será falado em voz alta — precisa estar sempre neste idioma escolhido na " +
+    "interface, nunca misturado com o idioma do pedido."
+  );
+}
+
 // Ver "bug real corrigido" no comentário do topo — caminho absoluto a
 // partir deste arquivo-fonte, não do `cwd` do processo que importou
 // este pacote. `packages/core/src/index.ts` -> sobe 3 níveis -> raiz.
@@ -332,6 +360,17 @@ export interface CreateSarahSessionOptions {
  * continua mostrando só o texto, comportamento idêntico ao de antes.
  */
 export type SarahEvent = { type: "text"; text: string } | { type: "tool"; toolName: string; risk: RiskLevel };
+
+/**
+ * Idioma de SAÍDA da resposta (Fase 4 (Voz), parte 2, ajuste 4) — só
+ * `apps/menubar` passa isso pra `ask()` (tem o toggle PT/EN na
+ * interface); `apps/cli` continua chamando `ask(prompt)` sem esse
+ * argumento, então nada muda pra ele — o agente responde livremente
+ * no idioma que achar mais natural, como sempre foi. Ver
+ * `buildOutputLanguageText` abaixo pro porquê disso precisar entrar no
+ * `systemPrompt`, não só trocar a voz do TTS.
+ */
+export type OutputLanguage = "pt" | "en";
 
 /**
  * Status REAL de uma integração, pro painel "status das integrações"
@@ -363,7 +402,7 @@ export interface SarahSession {
    * exibir). Mantém `resume` entre chamadas nesta mesma sessão
    * automaticamente.
    */
-  ask(prompt: string): AsyncGenerator<SarahEvent, void, unknown>;
+  ask(prompt: string, outputLanguage?: OutputLanguage): AsyncGenerator<SarahEvent, void, unknown>;
   /**
    * Últimas `limit` decisões do Gateway (mesma fonte que
    * `data/sarah.db`) — pro painel de histórico do `apps/menubar`, sem
@@ -415,7 +454,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
   // memória de sessão não é memória persistente.
   let sessionId: string | undefined;
 
-  async function* ask(prompt: string): AsyncGenerator<SarahEvent, void, unknown> {
+  async function* ask(prompt: string, outputLanguage?: OutputLanguage): AsyncGenerator<SarahEvent, void, unknown> {
     // Sem cache: busca fresca antes de cada pergunta, mesma lição já
     // registrada no docs/architecture.md sobre o bug de cache do
     // schema do Notion. Uma consulta SQLite local é desprezível.
@@ -426,10 +465,14 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "sem precisar perguntar de novo:\n" +
           preferences.map((p) => `- ${p.content}`).join("\n")
         : undefined;
-    // BASE44_POLICY_TEXT e GIT_WORKFLOW_POLICY_TEXT entram SEMPRE (não
-    // dependem de haver preferência guardada) — são regra de
-    // comportamento do agente, não fato sobre o usuário.
-    const systemPromptAppend = [BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, preferencesText].filter(Boolean).join("\n\n");
+    const outputLanguageText = buildOutputLanguageText(outputLanguage);
+    // BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT e outputLanguageText
+    // (quando presente) entram SEMPRE (não dependem de haver
+    // preferência guardada) — são regra de comportamento do agente,
+    // não fato sobre o usuário.
+    const systemPromptAppend = [BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, outputLanguageText, preferencesText]
+      .filter(Boolean)
+      .join("\n\n");
 
     const stream = query({
       prompt,

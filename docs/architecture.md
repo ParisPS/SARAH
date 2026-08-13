@@ -3956,3 +3956,82 @@ sem sobrepor nenhum card, os quatro cards do tamanho certo, donut de
 risco legível com porcentagem central, sem emoji nas listas, indicador
 na cor de acento, microfone destacado, e clima/localização aparecendo
 — tudo confirmado pelo usuário.
+
+---
+
+## Decisões e bugs encontrados na Fase 4 (Voz), segunda etapa — ajuste 4 (três correções antes de fechar a fase)
+
+Três bugs reais apontados pelo usuário depois de usar a interface por
+um tempo, corrigidos antes de dar a Fase 4 (Voz) como encerrada.
+
+### Bug 1: TTS soletrando URL/caminho/identificador longo, letra por letra
+
+O texto da resposta ia pro `say` (`window.sarah.speak`) exatamente
+como aparecia na tela — quando esse texto incluía uma URL, um caminho
+de arquivo absoluto, ou qualquer token técnico longo sem espaço (hash
+de commit, UUID, slug de projeto), o `say` não tem heurística nenhuma
+pra isso e lia CARACTERE POR CARACTERE, sem sentido nenhum em voz
+alta ("h, t, t, p, s, dois pontos, barra, barra, ..."). Corrigido com
+uma etapa determinística de limpeza ANTES do TTS — mesmo princípio já
+usado no projeto inteiro pra preferências/idioma (nunca depender do
+modelo "lembrar" de fazer algo sozinho): `sanitizeForSpeech()`
+(`renderer.js`) reusa os MESMOS padrões de URL/caminho já usados pro
+link clicável (agora com flag global, pra trocar TODAS as ocorrências,
+não só a primeira) mais um padrão novo pra qualquer outro token
+técnico longo que sobrar (20+ caracteres sem espaço, contendo pelo
+menos um dígito/`.`/`_`/`-` — heurística pra não confundir com uma
+palavra grande legítima em português/inglês), substituindo cada
+ocorrência por uma referência curta ("o link"/"o arquivo"/"um
+identificador"). Duas versões do MESMO texto a partir daí: a que vai
+pra tela (`showStageResponse`, original, link completo e clicável) e a
+que vai pro `say` (sanitizada) — nunca a mesma string nos dois
+lugares quando há link/caminho/id.
+
+### Bug 2: toggle de idioma só trocava a VOZ, não o texto — causa raiz e correção
+
+O toggle PT/EN de `apps/menubar` desde sempre só escolhia qual voz do
+`say` falava a resposta (Luciana/Samantha) — mas nada dizia pro
+MODELO em qual idioma escrever o TEXTO da resposta, que continuava
+saindo no idioma que ele achasse mais natural (geralmente o idioma do
+pedido). Resultado: pedir algo em português com o toggle em EN
+produzia texto em português lido com pronúncia/sotaque de inglês —
+sem sentido, porque o problema nunca foi a voz, foi o texto estar no
+idioma errado pra começo de conversa.
+
+Corrigido na camada certa: `packages/core/src/index.ts` ganhou
+`OutputLanguage` (`"pt" | "en"`, exportado) e `ask()` passou a aceitar
+um segundo parâmetro opcional `outputLanguage` — quando presente,
+`buildOutputLanguageText()` monta uma instrução ("escreva sua resposta
+final inteira em PORTUGUÊS/INGLÊS...") injetada no `systemPrompt` de
+CADA chamada a `query()`, mesmo mecanismo já usado desde a Fase 2 pras
+preferências (determinístico, sem cache, montado fresco a cada
+`ask()` — nunca uma decisão que o modelo precisa lembrar sozinho).
+`apps/cli` continua chamando `ask(prompt)` sem esse argumento — nada
+muda pro terminal, que nunca teve um toggle de idioma; só
+`apps/menubar` passa o valor do toggle, ponta a ponta:
+`renderer.js` → `preload.cjs` → `sarah:ask` (`main-process.ts`) →
+`sarah-daemon.ts` (bridge, no protocolo JSON Lines) → `daemon.ts`
+(processo filho) → `session.ask(prompt, outputLanguage)`. Com essa
+mudança, o TEXTO da resposta inteira sai no idioma escolhido — a voz
+que lê ele depois (já correta antes) finalmente bate com o texto.
+
+### Bug 3 (visual, simples): "SARAH" embaixo da esfera, pedido pra cima
+
+`#hologram-label` tinha `bottom: 4px` — trocado por `top: 6px`, sem
+mais mudança nenhuma (mesma fonte/cor/posição horizontal).
+
+### Validação — de ponta a ponta, com o usuário
+
+Sem acesso a clicar na janela a partir daqui: typecheck limpo em todos
+os arquivos tocados (só o artefato pré-existente e já diagnosticado
+`McpSdkServerConfigWithInstance`/duplicação de `zod` apareceu, mesma
+assinatura de sempre) e três testes reais pedidos ao usuário,
+confirmados um por um: (1) toggle em EN, pedido em português — TEXTO
+da legenda E voz saíram em inglês de verdade, não só a voz lendo texto
+em português; (2) pedido que gera um link/arquivo real — a fala
+resumiu ("o link"/"o arquivo") em vez de soletrar, e a tela continuou
+mostrando o link completo e clicável; (3) "SARAH" confirmado acima da
+esfera.
+
+**Fase 4 (Voz) fica encerrada aqui, com as três correções aplicadas e
+validadas.**
