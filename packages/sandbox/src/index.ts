@@ -1,6 +1,17 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { createProject, writeProjectFile, runProjectCommand, gitCommit, gitPush, startPreview } from "./projects.js";
+import {
+  createProject,
+  writeProjectFile,
+  runProjectCommand,
+  gitCommit,
+  gitPush,
+  gitCreateBranch,
+  currentBranch,
+  getProjectGithubRepo,
+  startPreview,
+} from "./projects.js";
+import { getGithubToken, createPullRequest, getDefaultBranch } from "./github.js";
 
 /**
  * Agente de código (Fase 5 parte 1) — primeira vez que a SARAH ganha
@@ -36,6 +47,18 @@ import { createProject, writeProjectFile, runProjectCommand, gitCommit, gitPush,
  * repositório VAZIO no GitHub são baixo risco (reversíveis, nada
  * enviado ainda); `git_push` de conteúdo de verdade continua exigindo
  * confirmação de alto risco, sem exceção.
+ *
+ * Fase 6: GitHub completo (Pull Requests) — `create_project` continua
+ * indo direto pra main/master, sem branch, pra projeto NOVO (isso não
+ * muda). Pra uma MUDANÇA num projeto JÁ EXISTENTE, o fluxo vira: cria
+ * uma branch nova (`git_create_branch`, baixo risco — local, aditiva,
+ * reversível), escreve/commita nela, e só então `create_pull_request`
+ * — que envia essa branch (nunca a main/master) e abre o PR de
+ * verdade, tudo isso ALTO risco, mesmo nível de `git_push` (é
+ * literalmente um `git_push` de uma branch, por dentro). Merge do PR
+ * fica de fora DE PROPÓSITO — nunca automático, o usuário revisa e
+ * mescla ele mesmo pelo GitHub; não existe (nem vai existir sem pedido
+ * explícito) uma tool de merge aqui.
  */
 
 const createProjectTool = tool(
@@ -154,6 +177,28 @@ const gitCommitTool = tool(
   }
 );
 
+const gitCreateBranchTool = tool(
+  "git_create_branch",
+  "Cria uma branch local nova (a partir do estado atual) e já muda pra ela — SÓ local, não envia nada " +
+    "pra lugar nenhum (isso é create_pull_request ou git_push). Baixo risco: uma branch nova não afeta " +
+    "a main/master nem o remoto, é aditiva e reversível. USE ISTO antes de escrever/commitar qualquer " +
+    "MUDANÇA num projeto JÁ EXISTENTE que vá virar um Pull Request — nunca commite direto na main/master " +
+    "de um projeto existente pra depois abrir PR. Não use ao CRIAR um projeto novo (create_project já " +
+    "deixa o projeto na branch padrão, direto — isso não muda).",
+  {
+    project: z.string().describe("slug/nome do projeto"),
+    branch: z.string().describe("nome da branch nova, ex.: 'feature/novo-botao' ou 'fix/typo-hero'"),
+  },
+  async (args) => {
+    try {
+      const result = await gitCreateBranch(args.project, args.branch);
+      return { content: [{ type: "text", text: JSON.stringify({ exitCode: result.code, stdout: result.stdout, stderr: result.stderr }, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+    }
+  }
+);
+
 const gitPushTool = tool(
   "git_push",
   "ENVIA commits locais pra um repositório remoto (`git push`) — ação IRREVERSÍVEL, ALTO RISCO SEMPRE, " +
@@ -175,6 +220,112 @@ const gitPushTool = tool(
         return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: result.skipped }) }] };
       }
       return { content: [{ type: "text", text: JSON.stringify({ exitCode: result.code, stdout: result.stdout, stderr: result.stderr }, null, 2) }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+    }
+  }
+);
+
+const createPullRequestTool = tool(
+  "create_pull_request",
+  "Abre um Pull Request DE VERDADE no GitHub a partir da branch atual do projeto (a que estiver com " +
+    "checkout feito no container — normalmente criada antes com git_create_branch) contra `base_branch`. " +
+    "ENVIA (`git push`) essa branch pro GitHub como parte da mesma chamada — ALTO RISCO SEMPRE, mesmo " +
+    "nível de git_push, sem exceção (pede confirmação antes de rodar). Recusa com erro claro se a " +
+    "branch atual for igual à `base_branch` (sinal de que git_create_branch não foi chamado antes) ou " +
+    "se o projeto não tiver repositório no GitHub associado. SÓ ABRE o PR — nunca faz merge, isso é " +
+    "sempre manual, decisão do usuário revisando pelo GitHub; não existe (e não deve existir sem pedido " +
+    "explícito) uma tool de merge neste projeto.",
+  {
+    project: z.string().describe("slug/nome do projeto"),
+    title: z.string().describe("título do Pull Request"),
+    description: z.string().describe("descrição/corpo do Pull Request (Markdown), explicando a mudança"),
+    base_branch: z
+      .string()
+      .optional()
+      .describe(
+        "branch base contra a qual o PR é aberto — se omitido, usa a branch padrão REAL do repositório " +
+          "(consultada na hora no GitHub, nunca assumida 'main'/'master' — os dois nomes aparecem neste " +
+          "projeto dependendo do repositório)"
+      ),
+  },
+  async (args) => {
+    try {
+      const token = await getGithubToken();
+      if (!token) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ ok: false, error: "GitHub não configurado nesta máquina ainda — rode `pnpm github:auth` uma vez." }),
+            },
+          ],
+        };
+      }
+
+      const repoInfo = getProjectGithubRepo(args.project);
+      if (!repoInfo) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ok: false,
+                error: `Projeto "${args.project}" não tem repositório no GitHub associado — sem isso não dá pra abrir um Pull Request.`,
+              }),
+            },
+          ],
+        };
+      }
+
+      const baseBranch = args.base_branch ?? (await getDefaultBranch(token, repoInfo.owner, repoInfo.repo));
+      const head = await currentBranch(args.project);
+      if (head === baseBranch) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ok: false,
+                error:
+                  `A branch atual do projeto ("${head}") já é a branch base ("${baseBranch}") — crie uma ` +
+                  "branch nova com git_create_branch e commite a mudança nela antes de abrir um Pull Request.",
+              }),
+            },
+          ],
+        };
+      }
+
+      const pushResult = await gitPush(args.project, "origin", head, false);
+      if (pushResult.skipped) {
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: pushResult.skipped }) }] };
+      }
+      if (pushResult.code !== 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ ok: false, error: `Falha ao enviar a branch "${head}" pro GitHub: ${pushResult.stderr.trim() || pushResult.stdout.trim()}` }),
+            },
+          ],
+        };
+      }
+
+      const pr = await createPullRequest(token, repoInfo.owner, repoInfo.repo, {
+        title: args.title,
+        body: args.description,
+        head,
+        base: baseBranch,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ ok: true, number: pr.number, url: pr.htmlUrl, headBranch: head, baseBranch }, null, 2),
+          },
+        ],
+      };
     } catch (err) {
       return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
     }
@@ -204,7 +355,7 @@ const previewTool = tool(
 
 export const codeServer = createSdkMcpServer({
   name: "sarah-code",
-  tools: [createProjectTool, writeFileTool, runCommandTool, gitCommitTool, gitPushTool, previewTool],
+  tools: [createProjectTool, writeFileTool, runCommandTool, gitCommitTool, gitCreateBranchTool, gitPushTool, createPullRequestTool, previewTool],
 });
 
 export { stopAllProjects } from "./projects.js";

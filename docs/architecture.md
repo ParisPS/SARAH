@@ -3053,7 +3053,20 @@ e "Próximo passo concreto" abaixo.
    limit), mas dois projetos reais do usuário (`food-products-site`,
    `natural-beauty-products-site`) ficam parados esperando decisão
    sobre upgrade de plano do Figma.
-6. GitHub completo (commits, PRs) + deploy de sites.
+6. GitHub completo (commits, PRs) + deploy de sites. **(Fase 6 —
+   Pull Requests — completa)**: `code.create_pull_request`, fluxo de
+   branch obrigatório pra mudança em projeto já existente
+   (`code.git_create_branch`, baixo risco), `create_pull_request`
+   sempre alto risco (mesmo nível de `git_push` — na prática É um
+   `git_push` por dentro, antes de abrir o PR). Merge fica de fora DE
+   PROPÓSITO, sem tool própria — só o usuário mescla pelo GitHub.
+   Validado de ponta a ponta com `createSarahSession` real (mesmo
+   Gateway/confirmação/audit log de `apps/cli`/`apps/menubar`) contra
+   um projeto real já existente: dois Pull Requests abertos de
+   verdade no GitHub (`social-post-community` #1 e #2), passando
+   por branch → commit → push confirmado → PR, sem merge automático.
+   **Deploy de sites continua FORA do escopo**, decisão já tomada
+   antes — usuário resolve manualmente, não retomado nesta fase.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
    nuance no risco médio.
 8. Novas integrações e expansões.
@@ -3284,3 +3297,152 @@ acima). Fase 5 encerra aqui com essa pendência registrada; retomar
 quando o usuário decidir sobre o upgrade de plano do Figma, ou quando
 confirmar que o seat atual já basta pra tentar de novo com mais
 cuidado com a cota.
+
+---
+
+## Decisões e bugs encontrados na Fase 6 (GitHub completo — Pull Requests)
+
+Objetivo: `code.create_pull_request(project, title, description,
+base_branch)`. Criar repositório, commit e push já existiam desde a
+Fase 5 parte 1/3 — só faltava o próprio Pull Request. Pedido explícito
+do usuário: só faz sentido dentro de um fluxo de BRANCH, diferente do
+que já existia (que empurra direto pra main/master num projeto novo).
+
+### Mudança de fluxo: branch obrigatória pra mudança em projeto já existente
+
+`code.create_project` continua indo direto pra main/master, sem
+branch, ao CRIAR um projeto novo — isso não muda. Mas ao fazer uma
+MUDANÇA num projeto JÁ EXISTENTE, o fluxo vira: `code.git_create_branch`
+(nova tool, BAIXO risco — cria e troca pra uma branch local, não toca
+main/master nem o remoto, aditiva e reversível igual `git_commit`) →
+escreve/commita já nessa branch → `code.create_pull_request` (ALTO
+risco, mesmo nível de `git_push` — na prática É um `git_push` de uma
+branch, feito por dentro da própria tool, antes de abrir o PR).
+Nenhuma tool nova decide sozinha ISSO é projeto novo ou mudança
+existente — só a intenção do pedido em si diferencia os dois casos, e
+isso não dá pra derivar da assinatura de nenhuma tool. Resolvido com
+uma regra sempre injetada no `systemPrompt` (`GIT_WORKFLOW_POLICY_TEXT`
+em `packages/core/src/index.ts`), mesmo mecanismo já usado pra
+`BASE44_POLICY_TEXT` (Fase 5 parte 2/3).
+
+### Risco: `create_pull_request` fica FORA de `LOW_RISK_TOOLS`, de propósito
+
+Mesma classificação de `git_push`, sem exceção — abrir um PR envolve
+dar push de uma branch de verdade pro GitHub, mesma trava. Documentado
+com o mesmo formato de comentário explicativo já usado pra `git_push`
+em `packages/permissions/src/index.ts`. `formatConfirmationInput`
+(`packages/core/src/index.ts`) ganhou um preview dedicado — mostra
+projeto/título/base/descrição ANTES de pedir confirmação, em vez do
+JSON cru, mesmo padrão de `git_push`/`send_draft`/Base44.
+
+### Fora de escopo, DE PROPÓSITO: merge do PR
+
+Não existe (e não deve existir sem pedido explícito) nenhuma tool de
+merge. `create_pull_request` só ABRE — o PR fica esperando o usuário
+revisar e mesclar ele mesmo pelo GitHub. Reforçado em três lugares:
+description da tool, `GIT_WORKFLOW_POLICY_TEXT` no `systemPrompt`, e o
+próprio texto de sucesso que a tool devolve.
+
+Deploy de sites continua fora do escopo da SARAH, como já decidido —
+usuário resolve manualmente (ver Roadmap). Só confirmado aqui pra não
+parecer esquecimento: nenhuma mudança nesta fase abre esse escopo.
+
+### Achado real, evitado ANTES de implementar: `main` vs `master` — os repositórios deste projeto usam os dois nomes, inconsistentemente
+
+Checando o estado real dos repositórios existentes (`GET /repos/:owner/:repo`
+via API, não assumido) antes de decidir um valor padrão pra
+`base_branch`: repositórios criados por `code.create_project` recebem
+`default_branch: "main"` do PRÓPRIO GitHub no instante da criação —
+mesmo completamente vazios, sem nenhum commit — porque é o padrão do
+GitHub pra repositório novo desde 2020. Mas o `git` LOCAL deste
+ambiente não tem `init.defaultBranch` configurado, então todo `git
+init` feito por `createProject` usa o nome clássico, `master`. Ou
+seja: até o primeiro push de verdade, o GitHub "acha" que a branch
+padrão é `main` (que não existe ainda), enquanto o repositório local
+está em `master`. Assumir qualquer um dos dois nomes de cabeça no
+código teria gerado PR contra uma branch errada silenciosamente (ou
+uma falha confusa do GitHub, "base branch not found"). Corrigido
+consultando a branch padrão REAL na hora (`getDefaultBranch`,
+`packages/sandbox/src/github.ts`) quando `base_branch` não é passado
+explicitamente pelo agente/usuário — nunca assumida.
+
+### Validação — de ponta a ponta, com o Gateway/audit log/GitHub reais
+
+Sem acesso direto pra digitar na janela do Electron a partir daqui:
+validado chamando `createSarahSession` (a MESMA função que
+`apps/cli`/`apps/menubar` usam, sem nenhum atalho/mock) com uma
+implementação de `confirm` idêntica à do terminal real
+(`apps/cli/src/main.ts`, `readline` + "(s/n)"), respondida com "s" de
+verdade via stdin — ou seja, o MESMO Gateway, a MESMA classificação de
+risco, o MESMO preview formatado, a MESMA exigência de confirmação
+explícita antes de rodar, só que a resposta "s" veio de mim em vez de
+um clique na janela.
+
+Dois pedidos em linguagem natural, projeto real `social-post-community`
+(reaberto, tinha 1 commit local nunca enviado — reusado exatamente
+como "projeto já existente" pedido pela validação):
+
+1. Pedido pra mudar o rodapé do `index.html` (adicionar o ano 2026 na
+   linha de copyright) — o agente checou o arquivo ANTES de editar,
+   viu que o ano já estava lá, e **recusou abrir um PR vazio**,
+   perguntando se o pedido era outra coisa — comportamento correto,
+   não um bug.
+2. Pedido pra adicionar um `<span>Feito com a SARAH.</span>` no
+   rodapé — o agente seguiu o fluxo certo sozinho, sem eu dizer o nome
+   de nenhuma tool: `git_create_branch` (branch
+   `feature/rodape-feito-com-sarah`, baixo risco, sem confirmação) →
+   `write_file` + `git_commit` na branch (baixo risco) →
+   `create_pull_request` (ALTO risco — Gateway pediu confirmação de
+   verdade, mostrando projeto/título/base/descrição exatamente como
+   `formatConfirmationInput` formata) → confirmado com "s" → PR aberto
+   de verdade: **https://github.com/ParisPS/social-post-community/pull/2**,
+   `feature/rodape-feito-com-sarah` → `master`, sem merge nenhum.
+
+Achado extra durante a validação (não um bug de código, um artefato do
+próprio processo de teste): uma tentativa anterior, que eu achava
+travada (sem nenhuma saída por vários minutos) e interrompi, na
+verdade tinha COMPLETADO de verdade em segundo plano — a causa da
+"sem saída" era um `| tail -250` no comando de teste, que só imprime
+depois que o processo de origem termina (não é um bug do projeto, é
+como `tail -N` funciona sem `-f`). Resultado: essa tentativa também
+abriu um PR real —
+**https://github.com/ParisPS/social-post-community/pull/1** (branch
+`chore/footer-copyright-2026` → `master`) — prova adicional,
+independente, de que o fluxo completo (branch → commit → push →
+abrir PR, sem merge) funciona de ponta a ponta. Os dois PRs ficam
+abertos no repositório real do usuário, esperando revisão/merge manual
+dele — nenhum dos dois foi mesclado ou fechado por mim.
+
+---
+
+## Fase 6 — completa
+
+`code.create_pull_request` fecha o pedaço que faltava do GitHub
+(criar repositório, commit e push já existiam desde a Fase 5). Fluxo
+de branch obrigatório pra mudança em projeto já existente
+(`code.git_create_branch`, baixo risco) — criação de projeto novo
+continua indo direto pra main/master, sem branch, isso não mudou.
+`create_pull_request` é ALTO risco sempre, mesmo nível de `git_push`
+(é um `git_push` por dentro, antes de abrir o PR) — fora de
+`LOW_RISK_TOOLS` de propósito, com preview dedicado mostrando
+projeto/título/base/descrição antes da confirmação. Merge fica FORA
+do escopo de propósito — sem tool própria, sempre manual pelo GitHub.
+Deploy de sites confirmado como continuando fora do escopo, decisão já
+tomada antes, não reaberta aqui.
+
+Achado real evitado antes de implementar (não assumido): repositórios
+deste ambiente têm `default_branch: "main"` no GitHub desde a criação
+(mesmo vazios), mas o `git` local usa `master` (sem
+`init.defaultBranch` configurado) — os dois nomes coexistem
+inconsistentemente até o primeiro push de verdade. Resolvido
+consultando a branch padrão real via API quando não especificada,
+nunca assumindo `main` nem `master` de cabeça.
+
+**Validado de ponta a ponta**, com o Gateway/audit log/GitHub reais
+(via `createSarahSession`, a mesma função usada por
+`apps/cli`/`apps/menubar`, sem mock): dois Pull Requests abertos de
+verdade contra um projeto já existente do usuário
+(`social-post-community` #1 e #2) — branch criada antes de qualquer
+commit (nunca direto na main/master), confirmação de alto risco
+exercida de verdade antes do push, PR aparecendo no GitHub, e nenhum
+merge automático em nenhum dos dois casos.

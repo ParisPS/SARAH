@@ -143,6 +143,61 @@ export async function createGithubRepo(token: string, slug: string): Promise<Cre
 }
 
 /**
+ * Branch padrão REAL do repositório no GitHub (`GET /repos/:owner/:repo`,
+ * campo `default_branch`) — Fase 6 (Pull Requests). Consultada em vez
+ * de assumir `"main"` por um achado real preparando a validação desta
+ * fase: os repositórios criados por este projeto usam a branch local
+ * `master` (git aqui não tem `init.defaultBranch` configurado pra
+ * `main`), mas o GitHub por padrão registra `default_branch: "main"`
+ * pra um repositório novo, mesmo vazio — os dois nomes coexistem sem
+ * bater, dependendo se o repo já recebeu algum push ou não. Assumir
+ * qualquer um dos dois de cabeça teria gerado PR contra uma branch
+ * errada silenciosamente.
+ */
+export async function getDefaultBranch(token: string, owner: string, repo: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/repos/${owner}/${repo}`, { headers: githubHeaders(token) });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Falha ao consultar o repositório "${owner}/${repo}" no GitHub (HTTP ${res.status}): ${detail}`);
+  }
+  const body = (await res.json()) as { default_branch: string };
+  return body.default_branch;
+}
+
+export interface CreatedPullRequest {
+  number: number;
+  htmlUrl: string;
+}
+
+/**
+ * Abre um Pull Request de verdade (`POST /repos/:owner/:repo/pulls`) —
+ * Fase 6. Só ABRE — merge fica de fora de propósito (decisão do
+ * usuário revisando pelo GitHub, nunca automática; ver
+ * `docs/architecture.md`, Fase 6). Se já existir um PR aberto com a
+ * mesma `head`/`base` (ex.: agente chamado duas vezes pro mesmo
+ * trabalho), o GitHub recusa com HTTP 422 — propagado como erro claro
+ * em vez de duplicar PRs silenciosamente.
+ */
+export async function createPullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  params: { title: string; body: string; head: string; base: string }
+): Promise<CreatedPullRequest> {
+  const res = await fetch(`${API_BASE}/repos/${owner}/${repo}/pulls`, {
+    method: "POST",
+    headers: { ...githubHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ title: params.title, body: params.body, head: params.head, base: params.base }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`Falha ao abrir o Pull Request em "${owner}/${repo}" (${params.head} → ${params.base}, HTTP ${res.status}): ${detail}`);
+  }
+  const body = (await res.json()) as { number: number; html_url: string };
+  return { number: body.number, htmlUrl: body.html_url };
+}
+
+/**
  * Gera um par de chaves ed25519 NOVO (via `ssh-keygen`, binário do
  * sistema — mesmo padrão de "chamar um binário do sistema" já usado
  * em todo o projeto) numa pasta temporária efêmera, cadastra a

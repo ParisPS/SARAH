@@ -287,6 +287,55 @@ export async function gitCommit(projectSlug: string, message: string): Promise<E
   return podman(["exec", runtime.containerName, "git", "commit", "-m", message]);
 }
 
+/**
+ * Cria uma branch local nova a partir do HEAD atual e já troca pra
+ * ela (`git checkout -b`) — Fase 6 (Pull Requests): pedido explícito
+ * de mudar o fluxo pra MUDANÇAS num projeto já existente, diferente
+ * de `create_project` (que continua indo direto pra main/master, sem
+ * branch — isso não muda). Baixo risco: uma branch local nova não
+ * afeta a main/master nem o remoto, é aditiva e reversível (`git
+ * branch -D` desfaz sem rastro, sem nenhuma chamada de rede).
+ * Idempotente: se a branch já existir (ex.: retomando um PR em
+ * andamento numa sessão nova), troca pra ela em vez de falhar.
+ */
+export async function gitCreateBranch(projectSlug: string, branch: string): Promise<ExecResult> {
+  const runtime = requireProject(projectSlug);
+  const created = await podman(["exec", runtime.containerName, "git", "checkout", "-b", branch]);
+  if (created.code === 0) return created;
+  return podman(["exec", runtime.containerName, "git", "checkout", branch]);
+}
+
+/**
+ * Nome da branch atualmente com checkout feito no container — usado
+ * por `code.create_pull_request` (Fase 6) pra saber qual branch
+ * enviar e abrir o PR a partir dela, sem precisar que o agente
+ * repita o nome (ele já passou pra `gitCreateBranch` antes).
+ */
+export async function currentBranch(projectSlug: string): Promise<string> {
+  const runtime = requireProject(projectSlug);
+  const result = await podman(["exec", runtime.containerName, "git", "rev-parse", "--abbrev-ref", "HEAD"]);
+  if (result.code !== 0) {
+    throw new Error(`Falha ao descobrir a branch atual do projeto "${projectSlug}": ${result.stderr.trim() || result.stdout.trim()}`);
+  }
+  return result.stdout.trim();
+}
+
+/**
+ * Owner/repo do GitHub associados a este projeto (extraído de
+ * `githubUrl`, já resolvido por `setUpGithubRepo` em `create_project`
+ * — nunca refeito aqui) — usado por `code.create_pull_request` (Fase
+ * 6) pra montar a URL da API REST de Pull Requests. `null` se o
+ * projeto não tem repositório no GitHub associado (ex.: `pnpm
+ * github:auth` nunca foi configurado) — a tool que chama isso decide
+ * a mensagem de erro, não esta função.
+ */
+export function getProjectGithubRepo(projectSlug: string): { owner: string; repo: string } | null {
+  const runtime = requireProject(projectSlug);
+  if (!runtime.githubUrl) return null;
+  const match = runtime.githubUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/?$/);
+  return match ? { owner: match[1], repo: match[2] } : null;
+}
+
 export interface GitPushResult extends ExecResult {
   skipped?: string;
 }

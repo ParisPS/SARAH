@@ -1,4 +1,4 @@
-# SARAH — Fases 0-5 completas (voz adiada; Figma com pendência de cota)
+# SARAH — Fases 0-6 completas (voz adiada; Figma com pendência de cota)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -212,12 +212,38 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   `docs/architecture.md` pro quase-incidente que motivou essa
   política).
 
+## Fase 6 — GitHub completo (Pull Requests)
+
+- `code.create_pull_request(project, title, description, base_branch)`:
+  criar repositório, commit e push já existiam desde a Fase 5 — só
+  faltava o PR. **Fluxo muda pra MUDANÇA num projeto já existente**
+  (diferente de criar um projeto novo, que continua indo direto pra
+  main/master, sem branch): `code.git_create_branch` (baixo risco, só
+  local) → escreve/commita já na branch → `create_pull_request`
+  (**ALTO risco, mesmo nível de `git_push`** — na prática é um
+  `git_push` de uma branch, feito por dentro da própria tool, antes de
+  abrir o PR de verdade).
+- **Merge fica de fora, de propósito**: não existe (e não deve existir
+  sem pedido explícito) nenhuma tool de merge — a SARAH abre o PR, o
+  usuário revisa e mescla ele mesmo pelo GitHub.
+- **Achado real evitado antes de implementar**: repositórios criados
+  por este projeto recebem `default_branch: "main"` do próprio GitHub
+  desde a criação (mesmo vazios), mas o `git` local usa `master` — os
+  dois nomes coexistem até o primeiro push de verdade. `base_branch`,
+  quando omitido, consulta a branch padrão REAL via API em vez de
+  assumir `main` ou `master` de cabeça.
+- **Validado:** de ponta a ponta com o Gateway/audit log/GitHub reais
+  — dois Pull Requests abertos de verdade contra um projeto já
+  existente do usuário, cada um passando por branch → commit → push
+  (confirmado) → PR aparecendo no GitHub, sem merge automático.
+
 **O que este código NÃO faz ainda (de propósito):** voz (ver acima —
-Fase 4 mesmo, adiada, não esquecida), GitHub completo (commits/PRs,
-só criação de repo + push existem hoje), deploy público de sites (só
-preview local dentro do sandbox), imagem realista/vídeo (Fase 5,
-decisões conscientes de não seguir por enquanto) e memória semântica —
-ver o roadmap completo em `docs/architecture.md`.
+Fase 4 mesmo, adiada, não esquecida), merge de Pull Request (sempre
+manual, pelo GitHub — decisão deliberada da Fase 6, não uma lacuna),
+deploy público de sites (só preview local dentro do sandbox), imagem
+realista/vídeo (Fase 5, decisões conscientes de não seguir por
+enquanto) e memória semântica — ver o roadmap completo em
+`docs/architecture.md`.
 
 ## Setup
 
@@ -313,6 +339,14 @@ Figma (`figma.export_assets`, baixo risco) precisa de `pnpm figma:auth`
 rodado antes e um `fileKey` real — **cuidado com a cota**: contas sem
 assento pago no Figma têm só ~6 chamadas/mês, então não vale ficar
 testando repetido (ver nota em "Setup" acima e `docs/architecture.md`).
+
+**Fase 6**: num projeto JÁ EXISTENTE (não um recém-criado), peça
+`muda X e abre um Pull Request pra isso` — confirme que a SARAH cria
+uma branch antes de mexer em qualquer arquivo (`code.git_create_branch`,
+sem confirmação), commita nela, e só então `create_pull_request` pede
+confirmação (**alto risco**, mostra projeto/título/base/descrição)
+antes de enviar a branch e abrir o PR de verdade no GitHub — sem
+mesclar sozinha.
 
 A primeira chamada de cada integração do sistema (Calendar, Reminders,
 Notes) deve mostrar um diálogo do macOS pedindo permissão pro processo

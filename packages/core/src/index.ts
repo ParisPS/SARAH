@@ -239,6 +239,23 @@ async function formatConfirmationInput(toolName: string, toolInput: unknown): Pr
     );
   }
 
+  if (toolName === "mcp__sarah-code__create_pull_request") {
+    const { project, title, description, base_branch } = toolInput as {
+      project?: string;
+      title?: string;
+      description?: string;
+      base_branch?: string;
+    };
+    return (
+      `   Abrir Pull Request no GitHub (envolve dar push da branch atual — mesma trava do git_push)\n` +
+      `   Projeto: ${project ?? "?"}\n` +
+      `   Título: ${title ?? "?"}\n` +
+      `   Base: ${base_branch ?? "(branch padrão do repositório)"}\n` +
+      `   Descrição: ${description ?? "(vazia)"}\n` +
+      `   OBS: só abre o PR — merge continua manual, pelo GitHub.`
+    );
+  }
+
   return null;
 }
 
@@ -269,6 +286,28 @@ const BASE44_POLICY_TEXT =
   "`mcp__claude_ai_Base44__*` (serviço externo, requer conta Base44 premium) se o usuário pedir POR " +
   'NOME, explicitamente (ex.: "faz pelo Base44", "cria no Base44", "usa o Base44") — nunca por conta ' +
   "própria, mesmo que pareça mais conveniente pra um pedido específico.";
+
+/**
+ * Regra de fluxo git — branch vs. commit direto (Fase 6, GitHub
+ * completo: Pull Requests). Sem isso, nada no schema das tools por si
+ * só impede o agente de commitar/pushar direto na main/master de um
+ * projeto já existente com histórico real — só a INTENÇÃO (é projeto
+ * novo ou mudança num que já existe?) distingue os dois casos, e isso
+ * só o agente sabe a partir do pedido em si, não dá pra derivar da
+ * assinatura de nenhuma tool. Mesmo mecanismo de injeção sempre-
+ * presente já usado pra `BASE44_POLICY_TEXT`.
+ */
+const GIT_WORKFLOW_POLICY_TEXT =
+  "Fluxo de git: criar um projeto NOVO (`code.create_project`) continua indo direto pra a branch " +
+  "padrão (main/master), sem branch — isso não muda. Mas ao fazer uma MUDANÇA num projeto JÁ " +
+  "EXISTENTE (o usuário pede pra alterar/adicionar algo num site/app que já foi criado antes), o " +
+  "fluxo é: 1) `code.git_create_branch` com um nome descritivo da mudança (baixo risco, só local); " +
+  "2) `code.write_file`/`code.run_command`/`code.git_commit` normalmente, já nessa branch; 3) " +
+  "`code.create_pull_request` (ALTO risco — pede confirmação, envolve push de verdade) pra enviar " +
+  "essa branch e abrir o Pull Request. NUNCA commite/pushe direto na main/master de um projeto já " +
+  "existente pra depois abrir PR — a branch precisa existir ANTES do commit. NUNCA faça merge do PR " +
+  "sozinho — não existe tool de merge aqui de propósito; depois de aberto, o PR fica esperando o " +
+  "usuário revisar e mesclar pelo GitHub.";
 
 // Ver "bug real corrigido" no comentário do topo — caminho absoluto a
 // partir deste arquivo-fonte, não do `cwd` do processo que importou
@@ -387,10 +426,10 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "sem precisar perguntar de novo:\n" +
           preferences.map((p) => `- ${p.content}`).join("\n")
         : undefined;
-    // BASE44_POLICY_TEXT entra SEMPRE (não depende de haver preferência
-    // guardada) — é regra de comportamento do agente, não fato sobre o
-    // usuário.
-    const systemPromptAppend = [BASE44_POLICY_TEXT, preferencesText].filter(Boolean).join("\n\n");
+    // BASE44_POLICY_TEXT e GIT_WORKFLOW_POLICY_TEXT entram SEMPRE (não
+    // dependem de haver preferência guardada) — são regra de
+    // comportamento do agente, não fato sobre o usuário.
+    const systemPromptAppend = [BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, preferencesText].filter(Boolean).join("\n\n");
 
     const stream = query({
       prompt,

@@ -81,6 +81,13 @@ const LOW_RISK_TOOLS = new Set<string>([
   "mcp__sarah-code__run_command",
   "mcp__sarah-code__git_commit",
   "mcp__sarah-code__preview",
+  // Fase 6 (Pull Requests): criar uma branch LOCAL nova é a mesma
+  // garantia de `git_commit` — não sai do container, não toca a
+  // main/master nem o remoto, é aditiva e reversível (`git branch -D`
+  // desfaz sem rastro). `create_pull_request` fica DE FORA de
+  // propósito, ver comentário de `git_push` logo abaixo — ela envia
+  // essa branch pro GitHub como parte da mesma chamada, mesma trava.
+  "mcp__sarah-code__git_create_branch",
   // Gráficos vetoriais (Fase 5 parte 4): mesma garantia de segurança
   // de `write_file`/`run_command` acima — o SVG é escrito e a
   // rasterização roda dentro do MESMO container isolado de `code.*`,
@@ -110,6 +117,13 @@ const LOW_RISK_TOOLS = new Set<string>([
   // baixo risco, ponto final. Ver formatConfirmationInput em
   // packages/core pro preview (remote/branch/force) mostrado antes da
   // confirmação.
+  //
+  // `mcp__sarah-code__create_pull_request` (Fase 6) fica DE FORA pelo
+  // MESMO motivo de `git_push` — na prática É um `git_push` de uma
+  // branch (feito por dentro da própria tool) antes de abrir o PR, só
+  // que sem o agente precisar chamar as duas tools separadamente. Sem
+  // exceção, mesmo sendo "só abrir um PR" — dar push de qualquer coisa
+  // pro GitHub nunca é baixo risco neste projeto.
   //
   // Base44 (conector nativo `mcp__claude_ai_Base44__*`, Fase 5 parte
   // 2): fica DE FORA de propósito, igual git_push — NENHUMA das tools
