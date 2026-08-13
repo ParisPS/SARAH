@@ -1,4 +1,4 @@
-# SARAH — Fases 0-6 completas (voz adiada; Figma com pendência de cota)
+# SARAH — Fases 0-6 completas (Figma com pendência de cota)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -91,13 +91,15 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   ["SENT", "INBOX"]` direto na API — chegou na caixa de entrada de
   verdade.
 
-## Fase 4 — interface gráfica (Electron), voz adiada
+## Fase 4 — interface gráfica (Electron) + voz
 
 - `apps/menubar`: segunda interface da SARAH — ícone na barra de menu
-  do macOS (Tray) que abre uma janela (820x800) com chat, uma
-  visualização holográfica central (Three.js, esfera geodésica azul)
-  e um dashboard, rodando LADO A LADO com o terminal (`apps/cli`), sem
-  substituí-lo — as duas interfaces continuam funcionando ao mesmo
+  do macOS (Tray) que abre uma janela com uma visualização holográfica
+  central (Three.js, esfera geodésica azul) DOMINANDO a tela, um
+  dashboard de 4 painéis-cartão preenchendo a janela inteira dos dois
+  lados dela, e uma barra de controles (microfone, texto minimizável,
+  toggle de idioma) — rodando LADO A LADO com o terminal (`apps/cli`),
+  sem substituí-lo — as duas interfaces continuam funcionando ao mesmo
   tempo, compartilhando o mesmo `data/sarah.db`.
 - **Gateway desacoplado do terminal:** `@sarah/permissions` não tem
   mais `readline` preso dentro — recebe um `confirm` INJETADO (dialog
@@ -129,27 +131,36 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   disponível. O processo do Electron fala com o daemon por JSON Lines
   via stdio; resolve esse caso e qualquer módulo nativo futuro com a
   mesma restrição.
-- **Voz (entrada e saída) fazia parte do escopo original desta fase e
-  foi DELIBERADAMENTE ADIADA** — não é algo esquecido, é uma decisão
-  de sequenciamento tomada no começo da fase (voz tratada como etapa
-  própria, independente da interface gráfica; ver roadmap em
-  `docs/architecture.md`). Por isso o título desta seção é "interface
-  completa, voz adiada": a Fase 4 não está 100% fechada no sentido do
-  escopo original, só a parte de interface está pronta. O holograma já
-  tem um gancho pronto (`setAudioLevel`) pra reagir a volume de voz
-  quando essa etapa começar.
-- **Voz, primeira etapa — capacidade de áudio validada isolada, AINDA
-  NÃO integrada na interface**: STT (`whisper.cpp` via Homebrew,
-  modelo multilíngue `ggml-small.bin`, detecção automática de
-  português/inglês) e TTS (`say` nativo do macOS, vozes Luciana pt_BR
-  + Samantha en_US) testados com ÁUDIO REAL — gravação ao vivo do
-  usuário transcrita corretamente nos dois idiomas, TTS confirmado ao
-  vivo e por round-trip objetivo (gera áudio → transcreve → compara
-  texto). `apps/menubar`/`apps/cli` não foram tocados nesta etapa —
-  ver `docs/architecture.md` pros achados reais (Homebrew desatualizado
-  não reconhecia o macOS desta máquina, captura de mic padrão do
-  `whisper-cpp` trava, `sox`/`rec` acabou sendo o caminho confiável) e
-  pro runbook de gravação validado.
+- **Voz — implementada em duas etapas, ambas completas e integradas**:
+  primeira etapa validou a capacidade isolada (STT via `whisper.cpp`
+  Homebrew, modelo multilíngue `ggml-small.bin`, detecção automática
+  português/inglês; TTS via `say` nativo, vozes Luciana pt_BR +
+  Samantha en_US — tudo testado com ÁUDIO REAL, gravação ao vivo
+  transcrita nos dois idiomas, TTS confirmado ao vivo e por
+  round-trip objetivo). Segunda etapa integrou tudo na interface:
+  botão de microfone sempre visível (grava até detectar silêncio ou
+  até clicar de novo), toda resposta falada em voz alta — mesmo
+  quando o pedido veio digitado —, toggle PT/EN escolhendo a VOZ DE
+  SAÍDA independente do idioma detectado na entrada, e um estado
+  "ouvindo" próprio na esfera (cor verde-azulada, distinta de
+  "pensando"). `@sarah/voice` roda inteiro no processo do Electron,
+  nunca no daemon — é plumbing de UI local, não uma tool que o agente
+  decide chamar, então não passa pelo Gateway. Ver `docs/architecture.md`
+  pros achados reais de cada etapa (captura de mic confiável via
+  `sox`/`rec`, permissão de Localização do Chromium pro widget de
+  status, bug do link clicável com crase de markdown, entre outros).
+- **Dashboard preenche a janela inteira, sem espaço vazio**: os 4
+  painéis-cartão crescem junto com a esfera até perto do rodapé. A
+  área de legenda abaixo da esfera ganhou um propósito real — mostra a
+  última resposta e, quando ela contém uma URL ou caminho de arquivo
+  real (ex.: um SVG que a SARAH acabou de criar), um botão clicável
+  que abre o link/arquivo direto, sem precisar abrir o painel de
+  Histórico. Um widget discreto de canto mostra data/hora sempre, e
+  clima/localização quando a permissão de Localização do macOS é
+  concedida (Open-Meteo + geocodificação reversa BigDataCloud, as duas
+  sem chave, chamadas sempre do processo principal — nunca do
+  renderer). Ícones de microfone/teclado viraram SVG monocromático, no
+  mesmo traço/paleta do resto da interface.
 - **Validado:** terminal revalidado como idêntico depois da
   refatoração do Gateway; protocolo do daemon (tools, confirmação de
   alto risco, histórico, dashboard) testado isolado, sem Electron no
@@ -249,9 +260,9 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   existente do usuário, cada um passando por branch → commit → push
   (confirmado) → PR aparecendo no GitHub, sem merge automático.
 
-**O que este código NÃO faz ainda (de propósito):** voz (ver acima —
-Fase 4 mesmo, adiada, não esquecida), merge de Pull Request (sempre
-manual, pelo GitHub — decisão deliberada da Fase 6, não uma lacuna),
+**O que este código NÃO faz ainda (de propósito):** merge de Pull
+Request (sempre manual, pelo GitHub — decisão deliberada da Fase 6,
+não uma lacuna),
 deploy público de sites (só preview local dentro do sandbox), imagem
 realista/vídeo (Fase 5, decisões conscientes de não seguir por
 enquanto) e memória semântica — ver o roadmap completo em
@@ -321,22 +332,33 @@ circular pequeno na barra de menu do macOS (tooltip "SARAH"). Clique
 pra abrir o dashboard: a esfera holográfica GRANDE e centralizada, com
 dois painéis-cartão de cada lado (status das integrações e proporção
 de risco à esquerda; atividade por categoria e atividade por hora à
-direita) e a conversa embaixo. `me dê um ping com a mensagem oi` roda
-direto (o holograma anima mais forte enquanto espera, sem texto
-"pensando..."; os painéis de risco/categoria/atividade se atualizam
-sozinhos depois da resposta); `finja apagar o arquivo teste.txt` abre
-um dialog nativo do macOS (não dentro da janela) pedindo confirmação.
-Cada resposta mostra um selo discreto de qual tool rodou (só texto);
-peça algo que crie um evento/lembrete/nota, ou que envie um e-mail
-(`send_draft`), e observe o NÚCLEO CENTRAL da esfera se transformar
-por ~3s — cresce/brilha e mostra um símbolo (envelope voando, caneta
-escrevendo, calendário carimbado) de acordo com a tarefa, depois volta
-ao normal; peça pra "lembrar" de algo (memória persistente) e o núcleo
-só brilha/cresce, sem símbolo. Se duas tarefas rodarem na mesma
-resposta, a segunda animação só começa depois que a primeira termina.
-Botão
-direito no ícone → "Histórico..." abre uma janela com as últimas ações
-do Gateway.
+direita) preenchendo a janela até perto do rodapé — sem lista de
+mensagens empilhada (a conversa completa mora no painel de Histórico,
+abaixo). `me dê um ping com a mensagem oi` roda direto, digitado (ícone
+de teclado expande um campo minimizado) — o holograma anima mais forte
+enquanto espera ("pensando", mostrado na legenda abaixo da esfera), os
+painéis de risco/categoria/atividade se atualizam sozinhos depois da
+resposta, e a resposta é FALADA em voz alta (voz do idioma marcado no
+toggle PT/EN, independente do idioma do pedido). Clique no ícone de
+microfone e fale o mesmo pedido — a esfera muda pra um verde-azulado
+("ouvindo") enquanto grava, para sozinha com silêncio ou no clique de
+novo, transcreve e trata exatamente como texto. `finja apagar o
+arquivo teste.txt` abre um dialog nativo do macOS (não dentro da
+janela) pedindo confirmação. Cada resposta mostra um selo discreto de
+qual tool rodou (só texto); peça algo que crie um evento/lembrete/
+nota, ou que envie um e-mail (`send_draft`), e observe o NÚCLEO
+CENTRAL da esfera se transformar por ~3s — cresce/brilha e mostra um
+símbolo (envelope voando, caneta escrevendo, calendário carimbado) de
+acordo com a tarefa, depois volta ao normal; peça pra "lembrar" de
+algo (memória persistente) e o núcleo só brilha/cresce, sem símbolo.
+Se duas tarefas rodarem na mesma resposta, a segunda animação só
+começa depois que a primeira termina. Peça pra criar um SVG (Fase 5)
+e veja a legenda mostrar um chip clicável com o caminho do arquivo —
+clique abre direto, sem passar pelo Histórico. O canto da tela mostra
+data/hora sempre, e clima/localização depois de autorizar o popup de
+Localização do macOS na primeira vez. Botão direito no ícone →
+"Histórico..." abre uma janela com a conversa completa e as últimas
+ações do Gateway.
 
 **Fase 5**: `cria um site estático simples chamado teste` (chama
 `code.create_project` + `code.write_file`, baixo risco — cria a pasta

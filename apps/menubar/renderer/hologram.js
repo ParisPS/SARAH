@@ -8,6 +8,11 @@ import * as THREE from "../node_modules/three/build/three.module.js";
 
 const COLOR_NODE = 0x5fa8f5; // azul médio — os pontos da malha
 const COLOR_NODE_THINKING = 0x8fc6ff; // azul mais vivo, só no estado "pensando"
+// Fase 4 parte 2 (voz): "ouvindo" precisa ser visualmente distinto de
+// "pensando" (cores diferentes, não só mais um nível de energia) —
+// verde-azulado (não confundir com o azul de "pensando" nem com o
+// laranja já usado pra risco alto em outro painel).
+const COLOR_NODE_LISTENING = 0x6fe0c0;
 const COLOR_EDGE = 0x2f5a94; // azul escuro/acinzentado — as linhas, mais discretas que os nós
 const COLOR_CORE = 0xeaf4ff; // quase branco — o ponto de luz central
 
@@ -40,7 +45,7 @@ function createDotTexture(size = 128) {
  *   2D (`#core-task`) com a reação do núcleo 3D feita aqui dentro.
  *   Categorias sem overlay (ex.: `"memory"`) simplesmente não têm
  *   glifo associado do lado do renderer — o núcleo reage sozinho.
- * @returns {{ setState: (state: "idle" | "thinking") => void, setAudioLevel: (level: number) => void, playTask: (category: string) => void, dispose: () => void }}
+ * @returns {{ setState: (state: "idle" | "thinking" | "listening") => void, setAudioLevel: (level: number) => void, playTask: (category: string) => void, dispose: () => void }}
  */
 export function createHologram(canvas, callbacks = {}) {
   const { onTaskStart, onTaskEnd } = callbacks;
@@ -132,6 +137,12 @@ export function createHologram(canvas, callbacks = {}) {
   let targetEnergy = 0;
   let energy = 0;
   let audioLevel = 0;
+  // Fase 4 parte 2: além de "idle"/"thinking" (que já controlavam
+  // `targetEnergy`), "listening" precisa de uma cor PRÓPRIA — guardado
+  // à parte porque a cor não é só função de `energy`/`boost` como
+  // antes (thinking desliza pela ENERGIA; listening é um estado
+  // discreto, entra/sai de uma vez, não gradualmente).
+  let currentState = "idle";
   const timer = new THREE.Timer(); // THREE.Clock está deprecated nesta versão
   let disposed = false;
 
@@ -228,8 +239,15 @@ export function createHologram(canvas, callbacks = {}) {
     const pulse = 1 + Math.sin(t * (1 + boost * 2.5)) * (0.025 + boost * 0.05);
     group.scale.setScalar(pulse);
 
-    // Cor dos nós desliza pro tom mais vivo quando "pensando".
-    nodeMaterial.color.lerpColors(new THREE.Color(COLOR_NODE), new THREE.Color(COLOR_NODE_THINKING), boost);
+    // Cor dos nós: "listening" tem prioridade sobre o gradiente
+    // idle<->thinking (é um estado discreto, não uma questão de
+    // energia) — fora dele, desliza pro tom mais vivo conforme
+    // "pensando" (comportamento de sempre, inalterado).
+    if (currentState === "listening") {
+      nodeMaterial.color.lerp(new THREE.Color(COLOR_NODE_LISTENING), Math.min(1, dt / 0.2));
+    } else {
+      nodeMaterial.color.lerpColors(new THREE.Color(COLOR_NODE), new THREE.Color(COLOR_NODE_THINKING), boost);
+    }
 
     // Núcleo: pulsa mais forte e cresce um pouco com energia/áudio —
     // é o parâmetro mais natural pra reagir a nível de áudio no
@@ -263,7 +281,12 @@ export function createHologram(canvas, callbacks = {}) {
 
   return {
     setState(state) {
-      targetEnergy = state === "thinking" ? 1 : 0;
+      currentState = state;
+      // "listening" pulsa um pouco mais que idle (dá uma sensação de
+      // "atenta", esperando) mas bem menos que "thinking" (que
+      // continua sendo a energia mais alta, reservada pra processar o
+      // pedido de verdade).
+      targetEnergy = state === "thinking" ? 1 : state === "listening" ? 0.45 : 0;
     },
     setAudioLevel(level) {
       // Gancho pro futuro (voz/TTS) — clamp defensivo, nunca deixa um

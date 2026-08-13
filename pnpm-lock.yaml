@@ -46,6 +46,9 @@ importers:
       '@sarah/permissions':
         specifier: workspace:*
         version: link:../../packages/permissions
+      '@sarah/voice':
+        specifier: workspace:*
+        version: link:../../packages/voice
       three:
         specifier: ^0.185.1
         version: 0.185.1
@@ -190,6 +193,8 @@ importers:
       zod:
         specifier: ^3.23.0
         version: 3.25.76
+
+  packages/voice: {}
 
 packages:
 

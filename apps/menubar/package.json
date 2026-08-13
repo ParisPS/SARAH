@@ -10,6 +10,7 @@
   "dependencies": {
     "@sarah/core": "workspace:*",
     "@sarah/permissions": "workspace:*",
+    "@sarah/voice": "workspace:*",
     "three": "^0.185.1"
   },
   "devDependencies": {

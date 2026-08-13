@@ -11,12 +11,30 @@
       * {
         box-sizing: border-box;
       }
+
+      /* --- paleta (Fase 4 parte 2, etapa 2): variáveis únicas pra
+         cores/tons já em uso no resto da interface — não é uma
+         paleta nova, é a MESMA (azul/ciano holográfico) só nomeada,
+         pra widget de status/legenda/ícones novos nunca driftarem pra
+         um tom fora do que o holograma e os painéis já usam. -------- */
+      :root {
+        --bg: #05070d;
+        --ink: #dce6f5;
+        --accent: #3b82f6;
+        --accent-bright: #5fa8f5;
+        --accent-glow: rgba(95, 168, 245, 0.4);
+        --muted: #5b7bab;
+        --muted-dim: #4a5f80;
+        --card-border: #16233d;
+        --danger: #f87171;
+      }
+
       html,
       body {
         margin: 0;
         height: 100%;
-        background: #05070d;
-        color: #dce6f5;
+        background: var(--bg);
+        color: var(--ink);
         font-family:
           -apple-system,
           BlinkMacSystemFont,
@@ -27,35 +45,72 @@
         display: flex;
         flex-direction: column;
         overflow: hidden;
+        position: relative;
       }
 
-      /* --- composição (Fase 4 parte 4): a esfera vira o elemento
-         dominante, CENTRALIZADA, com os painéis em DUAS COLUNAS ao
-         lado dela (não mais empilhados embaixo) — layout de 3 colunas
-         numa única região de "topo", seguindo o mockup de referência.
-         O brilho azul de fundo cobre a região inteira (esfera +
-         painéis), não só a esfera. -------------------------------- */
+      /* --- cantos estilo HUD (Fase 4 parte 2, etapa 2, item "mais
+         tech"): mesmo motivo visual reaproveitado em qualquer elemento
+         que precise ler como "leitura de instrumento" — usado só no
+         holograma e no widget de status, de propósito, pra não virar
+         ruído repetido em toda a tela. ----------------------------- */
+      .hud-corners {
+        position: relative;
+      }
+      .hud-corners::before,
+      .hud-corners::after {
+        content: "";
+        position: absolute;
+        width: 13px;
+        height: 13px;
+        border: 1px solid var(--accent-bright);
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      .hud-corners::before {
+        top: -1px;
+        left: -1px;
+        border-right: none;
+        border-bottom: none;
+      }
+      .hud-corners::after {
+        bottom: -1px;
+        right: -1px;
+        border-left: none;
+        border-top: none;
+      }
+
+      /* --- composição (Fase 4 parte 2, etapa 2 — corrige espaço vazio
+         apontado pelo usuário): `#top` (esfera + os quatro cards) vira
+         `flex: 1` dentro da coluna do body, preenchendo TODA a altura
+         disponível até a barra de legenda/controles — nunca mais uma
+         faixa preta vazia entre o dashboard e o rodapé. Os cards
+         acompanham (`.dash-col`/`.panel` com `flex: 1`, ver abaixo),
+         então crescem junto em vez de deixar o espaço extra sobrando
+         no meio. --------------------------------------------------- */
       #top {
-        flex-shrink: 0;
+        flex: 1 1 auto;
+        min-height: 0;
         display: grid;
-        grid-template-columns: 210px 1fr 210px;
+        grid-template-columns: 220px 1fr 220px;
         gap: 18px;
-        align-items: center;
-        padding: 22px 22px 18px;
+        align-items: stretch;
+        padding: 20px 22px 10px;
         background:
           radial-gradient(ellipse at center, rgba(60, 130, 246, 0.18) 0%, rgba(5, 7, 13, 0) 72%),
-          #05070d;
-        border-bottom: 1px solid #10192c;
+          var(--bg);
+        border-bottom: 1px solid var(--card-border);
       }
       .dash-col {
         display: flex;
         flex-direction: column;
         gap: 14px;
         min-width: 0;
+        min-height: 0;
       }
       #hologram-wrap {
         position: relative;
-        height: 320px;
+        height: 100%;
+        min-height: 260px;
       }
       #hologram {
         width: 100%;
@@ -69,17 +124,25 @@
         font-size: 11px;
         letter-spacing: 0.18em;
         text-transform: uppercase;
-        color: #5b7bab;
+        color: var(--muted);
         pointer-events: none;
       }
 
-      /* --- painéis do dashboard: cada um é um cartão de verdade ------
-         (fundo próprio, cantos arredondados, padding generoso, gap
-         real entre eles via `.dash-col` acima) — não mais linhas finas
-         encostadas umas nas outras. */
+      /* --- painéis do dashboard: cartões que agora crescem pra
+         dividir a altura da coluna (`flex: 1` cada) em vez de altura
+         fixa por conteúdo — é isso que faz o dashboard inteiro
+         acompanhar a esfera até perto do rodapé. O CONTEÚDO de cada
+         painel continua centralizado verticalmente (`.body` também
+         flex), não esticado, exceto o gráfico de atividade (ver
+         `#activity-chart` abaixo), que faz mais sentido preencher de
+         verdade. ----------------------------------------------------*/
       .panel {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
         background: linear-gradient(180deg, rgba(19, 31, 54, 0.8) 0%, rgba(9, 14, 25, 0.8) 100%);
-        border: 1px solid #16233d;
+        border: 1px solid var(--card-border);
         border-radius: 14px;
         padding: 14px 15px;
         box-shadow: 0 14px 30px -20px rgba(0, 0, 0, 0.75);
@@ -89,8 +152,19 @@
         font-size: 10px;
         text-transform: uppercase;
         letter-spacing: 0.1em;
-        color: #5b7bab;
+        color: var(--muted);
         font-weight: 600;
+        flex-shrink: 0;
+      }
+      .panel .body {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-height: 0;
+      }
+      #panel-activity .body {
+        justify-content: stretch;
       }
 
       /* status das integrações */
@@ -120,7 +194,7 @@
       }
       .integration-row .detail {
         font-size: 10px;
-        color: #5b7bab;
+        color: var(--muted);
       }
 
       /* risco */
@@ -133,7 +207,7 @@
         margin-bottom: 6px;
       }
       #risk-bar .low {
-        background: #3b82f6;
+        background: var(--accent);
       }
       #risk-bar .high {
         background: #f5b971;
@@ -144,6 +218,7 @@
         gap: 4px;
         font-size: 11px;
         color: #9fb4d4;
+        font-variant-numeric: tabular-nums;
       }
       .risk-legend .swatch {
         display: inline-block;
@@ -153,7 +228,7 @@
         margin-right: 4px;
       }
       .risk-legend .swatch.low {
-        background: #3b82f6;
+        background: var(--accent);
       }
       .risk-legend .swatch.high {
         background: #f5b971;
@@ -184,7 +259,7 @@
       }
       .category-row .fill {
         height: 100%;
-        background: linear-gradient(90deg, #2f5a94, #5fa8f5);
+        background: linear-gradient(90deg, #2f5a94, var(--accent-bright));
       }
       .category-row .count {
         width: 18px;
@@ -193,104 +268,120 @@
         font-variant-numeric: tabular-nums;
       }
 
-      /* atividade recente (gráfico) */
+      /* atividade recente (gráfico) — Fase 4 parte 2, etapa 2: agora
+         preenche a altura real do painel (`preserveAspectRatio="none"`
+         já fazia o SVG esticar; só faltava a CSS não travar em 46px
+         fixos, que era o que sobrava do valor usado só pro viewBox). */
       #activity-chart {
         display: block;
+        width: 100%;
+        height: 100%;
       }
 
       .empty-panel {
         font-size: 11px;
-        color: #4a5f80;
+        color: var(--muted-dim);
         padding: 4px 0;
       }
 
-      /* --- conversa --------------------------------------------------- */
-      #conversation {
-        flex: 1;
-        overflow-y: auto;
-        padding: 10px 12px;
-        min-height: 80px;
-      }
-      #conversation:empty::before {
-        content: "Peça algo pra SARAH — ex.: \"me dê um ping com a mensagem oi\" ou \"finja apagar o arquivo teste.txt\".";
-        opacity: 0.4;
-        font-size: 12px;
-      }
-      .row {
+      /* --- área de legenda (Fase 4 parte 2, etapa 2 — deixou de ser
+         um espaço vazio de "respiro" e virou um propósito real:
+         mostra o status atual (ouvindo/pensando) e, depois de cada
+         resposta, o TEXTO da resposta + um link clicável quando ela
+         contém uma URL ou caminho de arquivo real gerado pela SARAH —
+         sem precisar abrir o painel de Histórico só pra clicar em
+         algo que acabou de ser criado. `renderer.js` decide o
+         conteúdo; aqui só o estilo. ---------------------------------*/
+      #stage {
+        flex-shrink: 0;
+        min-height: 58px;
+        max-height: 108px;
         display: flex;
-        margin-bottom: 12px;
-      }
-      .row.user {
-        justify-content: flex-end;
-      }
-      .row.sarah,
-      .row.erro {
-        justify-content: flex-start;
-      }
-      .bubble {
-        max-width: 78%;
-        padding: 8px 10px;
-        border-radius: 8px;
-        font-size: 13px;
-        line-height: 1.42;
-      }
-      .row.user .bubble {
-        background: #1b2740;
-        color: #cdd8ec;
-        border-radius: 10px 10px 2px 10px;
-      }
-      .row.sarah .bubble {
-        background: linear-gradient(180deg, #0d1830 0%, #0a1424 100%);
-        border-left: 2px solid #3b82f6;
-        border-radius: 2px 10px 10px 10px;
-        box-shadow: 0 0 12px -4px rgba(59, 130, 246, 0.45);
-      }
-      .row.erro .bubble {
-        background: #2a1220;
-        border-left: 2px solid #f87171;
-        border-radius: 2px 10px 10px 10px;
-        color: #f3b4b4;
-      }
-      .bubble .text {
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-      .bubble .tools {
-        margin-top: 6px;
-        padding-top: 6px;
-        border-top: 1px solid rgba(125, 211, 252, 0.15);
-        font-size: 10.5px;
-        letter-spacing: 0.02em;
-        color: #7dabe0;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-      }
-      .bubble .tools .chip {
-        display: inline-flex;
         align-items: center;
-        gap: 4px;
-        animation: chip-fade-in 0.35s ease-out;
+        justify-content: center;
+        padding: 10px 26px;
+        border-top: 1px solid var(--card-border);
+        background: linear-gradient(180deg, rgba(9, 14, 25, 0) 0%, rgba(9, 14, 25, 0.55) 100%);
       }
-      .bubble .tools .chip.high {
-        color: #f5b971;
+      #stage-content {
+        width: 100%;
+        max-width: 560px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        text-align: center;
       }
-      .chip-icon {
-        display: inline-block;
+      #stage-content.hint {
         font-size: 12px;
-        line-height: 1;
-        transform-origin: 50% 60%;
+        color: var(--muted-dim);
+        line-height: 1.5;
+      }
+      #stage-content.status {
+        font-size: 12.5px;
+        color: var(--accent-bright);
+        letter-spacing: 0.02em;
+      }
+      #stage-content .response-text {
+        font-size: 12.5px;
+        color: #cdd8ec;
+        line-height: 1.45;
+        max-height: 54px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+      }
+      #stage-content .link-chip {
+        border: 1px solid var(--accent);
+        background: #0f2143;
+        color: var(--accent-bright);
+        font-size: 11px;
+        padding: 5px 12px;
+        border-radius: 14px;
+        cursor: pointer;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #stage-content .link-chip:hover {
+        border-color: var(--accent-bright);
+        background: #143059;
       }
 
-      @keyframes chip-fade-in {
-        from {
-          opacity: 0;
-          transform: translateY(2px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
+      /* --- widget de status (Fase 4 parte 2, etapa 2): data/hora
+         sempre disponíveis (não dependem de rede/permissão); clima e
+         localização aparecem assim que a Geolocalização do sistema for
+         autorizada e as chamadas (Open-Meteo + BigDataCloud, ver
+         `main-process.ts`) responderem. Canto discreto, não compete
+         com a esfera. ------------------------------------------------*/
+      #status-widget {
+        position: absolute;
+        top: 14px;
+        right: 20px;
+        padding: 6px 12px;
+        text-align: right;
+        font-size: 10.5px;
+        color: var(--muted);
+        line-height: 1.5;
+        pointer-events: none;
+        z-index: 2;
+      }
+      .status-line {
+        display: flex;
+        justify-content: flex-end;
+        gap: 7px;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.02em;
+      }
+      #status-time {
+        color: var(--accent-bright);
+        font-weight: 600;
+      }
+      #status-weather {
+        color: var(--accent-bright);
+      }
+      #status-location {
+        color: var(--muted);
       }
 
       /* --- animação de tarefa no NÚCLEO da esfera (Fase 4 parte 4,
@@ -450,39 +541,141 @@
         }
       }
 
-      /* --- input -------------------------------------------------- */
-      #inputRow {
-        border-top: 1px solid #10192c;
-        padding: 8px;
+      /* --- controles (Fase 4 parte 2, voz): microfone SEMPRE visível,
+         toggle de idioma de SAÍDA, e um ícone pequeno que EXPANDE o
+         campo de texto — não mais uma caixa sempre visível. Uma linha
+         só, centralizada, discreta — a esfera continua sendo o
+         elemento dominante da tela. Ícones viraram SVG na etapa 2
+         (mesmo traço monocromático dos glifos de tarefa do núcleo),
+         trocando os emojis ⌨️/🎤 iniciais. ---------------------------*/
+      #controls {
         flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 14px 18px 18px;
       }
-      #promptInput {
-        width: 100%;
-        padding: 7px 9px;
-        border-radius: 6px;
+      .icon-btn {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
         border: 1px solid #1c2c4a;
         background: #0b1322;
-        color: #dce6f5;
+        color: #cdd8ec;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        flex-shrink: 0;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.15s;
+      }
+      .icon-btn svg {
+        width: 17px;
+        height: 17px;
+      }
+      .icon-btn:hover {
+        border-color: var(--accent);
+      }
+      .icon-btn:active {
+        transform: scale(0.94);
+      }
+      .icon-btn:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      /* Microfone GRAVANDO: vermelho pulsante — feedback claro além da
+         cor "ouvindo" da própria esfera, pro botão em si já deixar
+         óbvio que um clique de novo vai PARAR a gravação. `currentColor`
+         no SVG faz o traço do ícone acompanhar esta cor automaticamente. */
+      #micBtn.recording {
+        background: #3a0f14;
+        border-color: var(--danger);
+        color: var(--danger);
+        animation: mic-pulse 1.1s ease-in-out infinite;
+      }
+      @keyframes mic-pulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(248, 113, 113, 0.45);
+        }
+        50% {
+          box-shadow: 0 0 0 7px rgba(248, 113, 113, 0);
+        }
+      }
+
+      #promptInput {
+        width: 0;
+        min-width: 0;
+        padding: 0;
+        border: 1px solid transparent;
+        border-radius: 19px;
+        background: #0b1322;
+        color: var(--ink);
         font-size: 13px;
         outline: none;
+        opacity: 0;
+        transition:
+          width 0.18s ease,
+          opacity 0.15s ease,
+          padding 0.18s ease;
       }
-      #promptInput:focus {
-        border-color: #3b82f6;
+      /* Expandido (ícone de teclado clicado) — só então vira uma caixa
+         de verdade, com largura/padding reais. */
+      #promptInput.expanded {
+        width: 260px;
+        padding: 9px 12px;
+        opacity: 1;
+        border-color: #1c2c4a;
+      }
+      #promptInput.expanded:focus {
+        border-color: var(--accent);
       }
       #promptInput:disabled {
         opacity: 0.45;
       }
 
-      #conversation::-webkit-scrollbar {
-        width: 8px;
+      /* Toggle de idioma de SAÍDA (fala da SARAH) — independente do
+         idioma que o usuário fala/digita PRA ela, que é sempre
+         auto-detectado. */
+      #langToggle {
+        display: flex;
+        border: 1px solid #1c2c4a;
+        border-radius: 19px;
+        overflow: hidden;
+        flex-shrink: 0;
       }
-      #conversation::-webkit-scrollbar-thumb {
-        background: #1c2c4a;
-        border-radius: 4px;
+      .lang-btn {
+        border: none;
+        background: transparent;
+        color: #6b87ae;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        padding: 9px 13px;
+        cursor: pointer;
+      }
+      .lang-btn.active {
+        background: #163256;
+        color: #9fd4ff;
       }
     </style>
   </head>
   <body>
+    <div id="status-widget" class="hud-corners">
+      <div class="status-line status-datetime">
+        <span id="status-time">--:--</span>
+        <span id="status-date">--/--</span>
+      </div>
+      <div class="status-line status-place">
+        <span id="status-weather">--°C</span>
+        <span id="status-location">localização não disponível</span>
+      </div>
+    </div>
+
     <div id="top">
       <div class="dash-col dash-col-left">
         <div class="panel" id="panel-integrations">
@@ -495,7 +688,7 @@
         </div>
       </div>
 
-      <div id="hologram-wrap">
+      <div id="hologram-wrap" class="hud-corners">
         <canvas id="hologram"></canvas>
         <div id="core-task"></div>
         <div id="hologram-label">SARAH</div>
@@ -513,9 +706,41 @@
       </div>
     </div>
 
-    <div id="conversation"></div>
-    <div id="inputRow">
-      <input id="promptInput" type="text" placeholder="Peça algo pra SARAH..." autofocus />
+    <div id="stage">
+      <div id="stage-content" class="hint">
+        Fale (🎙) ou digite (⌨) — a conversa completa fica no painel de Histórico (botão direito no ícone da barra de
+        menu).
+      </div>
+    </div>
+
+    <div id="controls">
+      <button id="textToggleBtn" class="icon-btn" title="Digitar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2.5" y="5.5" width="19" height="13" rx="2"></rect>
+          <circle cx="6.5" cy="9" r="0.6" fill="currentColor" stroke="none"></circle>
+          <circle cx="10" cy="9" r="0.6" fill="currentColor" stroke="none"></circle>
+          <circle cx="13.5" cy="9" r="0.6" fill="currentColor" stroke="none"></circle>
+          <circle cx="17" cy="9" r="0.6" fill="currentColor" stroke="none"></circle>
+          <circle cx="6.5" cy="12" r="0.6" fill="currentColor" stroke="none"></circle>
+          <circle cx="10" cy="12" r="0.6" fill="currentColor" stroke="none"></circle>
+          <circle cx="13.5" cy="12" r="0.6" fill="currentColor" stroke="none"></circle>
+          <circle cx="17" cy="12" r="0.6" fill="currentColor" stroke="none"></circle>
+          <rect x="6.5" y="14.3" width="11" height="1.8" rx="0.6" fill="currentColor" stroke="none"></rect>
+        </svg>
+      </button>
+      <input id="promptInput" type="text" placeholder="Peça algo pra SARAH..." />
+      <button id="micBtn" class="icon-btn" title="Falar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+          <path d="M5 11a7 7 0 0 0 14 0"></path>
+          <line x1="12" y1="18" x2="12" y2="22"></line>
+          <line x1="8" y1="22" x2="16" y2="22"></line>
+        </svg>
+      </button>
+      <div id="langToggle">
+        <button class="lang-btn active" data-lang="pt">PT</button>
+        <button class="lang-btn" data-lang="en">EN</button>
+      </div>
     </div>
     <script type="module" src="renderer.js"></script>
   </body>

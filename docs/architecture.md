@@ -2962,7 +2962,14 @@ e "Próximo passo concreto" abaixo.
    painéis como cartões espaçados de verdade, e o NÚCLEO CENTRAL da
    esfera se transformando brevemente (~3s, numa fila que nunca
    sobrepõe duas animações) pra mostrar qual tarefa acabou de rodar —
-   tudo validado rodando de verdade. Falta só a voz, à parte.)**
+   tudo validado rodando de verdade. Voz integrada também, em duas
+   etapas — STT/TTS isolados e depois integrados na interface (mic
+   sempre visível, esfera com estado "ouvindo", fala de toda resposta,
+   toggle de idioma de saída) —, e o dashboard ganhou um segundo
+   polimento (preenche a janela inteira, legenda com link clicável,
+   widget de clima/localização/hora, ícones SVG). Ver seção própria
+   "Fase 4 (Voz)" mais abaixo pro detalhe de cada etapa. **Fase 4
+   completa.**)**
 5. Agente de código: sandbox por projeto, criação de projetos, git.
    **(Fase 5 parte 1 completa: runtime verificado — podman, VM
    inicializada, `docker`/OrbStack/Colima ausentes nesta máquina —
@@ -3077,7 +3084,8 @@ e "Próximo passo concreto" abaixo.
 incluindo `send_draft`, validados rodando de verdade — detalhes na
 seção acima).
 
-**Fase 4 está completa até a parte 4** — resumo:
+**Fase 4 está completa** (partes 1-4 da interface + as duas etapas da
+voz) — resumo:
 
 - **Parte 1**: framework decidido (Electron, por não depender de
   compilação nativa local) + Gateway (`@sarah/permissions`)
@@ -3128,8 +3136,17 @@ seção acima).
   isoladas foram, de novo, processos órfãos de teste, não o código
   novo).
 
-**Falta só a voz** — tratada desde o início como uma etapa
-independente da interface gráfica, ainda não iniciada.
+**A voz foi implementada em duas etapas, ambas completas** — ver
+"Decisões e bugs encontrados na Fase 4 (Voz)" mais abaixo pro detalhe
+de cada uma: primeira etapa validou STT (whisper.cpp)/TTS (`say`)
+isolados, com áudio real; segunda etapa integrou tudo na interface
+(microfone sempre visível, esfera com estado "ouvindo", toda resposta
+falada em voz alta, toggle PT/EN de idioma de saída) e, num segundo
+ajuste pedido depois de ver a primeira versão rodando, também resolveu
+o espaço vazio da composição, deu um propósito real à área de legenda
+(link clicável pra arquivos/URLs que a SARAH acabou de criar), trocou
+os ícones de emoji por SVG, e acrescentou um widget de data/hora/
+clima/localização. **Fase 4 está completa.**
 
 **Fase 5, parte 1 está completa** (sandbox de código, fundação +
 implementação): `docker`/OrbStack/Colima ausentes nesta máquina,
@@ -3607,3 +3624,212 @@ objetivo. `apps/menubar`/`apps/cli` **NÃO foram tocados** — integração
 (captura de mic pela interface, indicador visual de "ouvindo",
 reprodução da resposta falada) é a PRÓXIMA etapa, de propósito fora do
 escopo desta.
+
+---
+
+## Decisões e bugs encontrados na Fase 4 (Voz), segunda etapa — integração na interface
+
+Depois de STT/TTS validados isolados (etapa anterior), esta etapa
+integra tudo em `apps/menubar` — em dois pedidos consecutivos do
+usuário (integração inicial, depois um segundo ajuste depois de ver a
+primeira versão rodando). Documentados juntos aqui porque nenhum dos
+dois tinha sido commitado ainda quando o segundo chegou.
+
+### Onde a voz roda: processo principal do Electron, nunca no daemon
+
+`@sarah/voice` (novo pacote — wrappers finos sobre `whisper-cli`
+(STT), `say` (TTS) e `sox`/`rec` (gravação, efeito `silence` embutido
+pra parar sozinho, `SIGINT` — não `SIGKILL`/`SIGALRM` — pra parar
+manualmente sem corromper o `.wav`, achado já registrado na etapa
+anterior) roda inteiro no processo do Electron (`main-process.ts`),
+nunca no daemon filho que carrega `@sarah/core`. Decisão consciente:
+gravação/reprodução de voz é plumbing de UI local, não uma tool que o
+AGENTE decide chamar — não faz sentido passar pelo Gateway
+(`@sarah/permissions`), que existe pra governar decisões do modelo,
+não interação direta do usuário com a interface. Mesmo raciocínio já
+usado pro dialog nativo de confirmação (`confirmViaDialog`).
+
+### Composição: esfera dominante, conversa migrou pro Histórico
+
+A lista de mensagens que ocupava a janela principal saiu de lá —
+migrou pro painel de histórico (`history.html`), que ganhou uma seção
+de conversa (bolhas + selo de tool, mesmo `tool-meta.js` compartilhado
+com a janela principal pra não duplicar a tabela emoji/nome/animação
+em dois lugares) além da tabela de decisões do Gateway que já tinha.
+A janela principal ficou só com a esfera + dashboard + uma barra de
+controles: botão de microfone sempre visível, campo de texto que só
+expande quando o ícone de teclado é clicado (CSS `width`/`opacity`,
+não uma segunda linha), e um toggle PT/EN.
+
+### Gravação: dois IPC handlers, não um evento push
+
+`sarah:startRecording` devolve na hora, assim que o processo `sox`
+nasceu (não espera terminar). `sarah:awaitRecording` é uma chamada
+SEPARADA que fica pendurada até a MESMA promise (`Recorder.finished`)
+resolver — seja por silêncio detectado sozinho, seja por
+`sarah:stopRecording` (clique de novo no microfone). Desenhado assim
+de propósito: este projeto nunca usou `webContents.send` (evento
+push) em nenhum outro lugar, só invoke/await — introduzir o primeiro
+padrão push só pra isso quebraria a consistência sem necessidade real,
+já que "esperar a gravação acabar" cabe perfeitamente num segundo
+invoke que só resolve mais tarde.
+
+### Idioma de saída independente do idioma falado
+
+O toggle PT/EN na interface escolhe a VOZ (Luciana/Samantha) que fala
+a resposta — sempre independente do idioma que o usuário falou/digitou
+pra SARAH, que o STT detecta sozinho (`whisper-cli`, modelo
+multilíngue). Comportamento confirmado explicitamente com o usuário
+antes de implementar. Toda resposta é falada em voz alta, mesmo quando
+o pedido veio digitado — mesma decisão já registrada na etapa
+anterior, agora implementada de verdade em `renderer.js`
+(`sendPrompt`, único fluxo compartilhado por texto E voz).
+
+### Estado "ouvindo" na esfera: cor discreta, não um nível de energia
+
+`hologram.js` já tinha "idle"/"thinking" controlados por
+`targetEnergy` (energia contínua, cor desliza de um tom pro outro).
+"Ouvindo" precisava ser visualmente DISTINTO, não só mais um nível de
+energia no meio do caminho — implementado como uma cor própria
+(`COLOR_NODE_LISTENING`, verde-azulado, não confundir com o azul de
+"pensando" nem o laranja já usado pra risco alto) que tem prioridade
+sobre o gradiente idle↔thinking sempre que `currentState ===
+"listening"`, com uma energia fixa de 0.45 (entre o repouso de idle e
+o pico de thinking) só pro pulso ficar um pouco mais vivo, sem
+competir com o nível reservado pra "processando de verdade".
+
+### Validação da integração completa — testada de ponta a ponta pelo usuário
+
+Sem acesso a clicar na janela do Electron a partir daqui — pedido ao
+usuário pra testar com o app aberto de verdade:
+
+- Layout novo (esfera dominante, sem lista de mensagens, campo de
+  texto minimizado) confirmado visualmente.
+- Ícone de microfone e widget de status (ver abaixo) confirmados
+  visualmente.
+- **Microfone de ponta a ponta, nos dois idiomas**: clique no
+  microfone, fala real em português E em inglês, SARAH entendeu os
+  dois (STT auto-detectando), respondeu, e falou a resposta na voz
+  certa pro idioma marcado no toggle da interface — confirmado
+  funcionando pelo usuário.
+
+---
+
+## Decisões e bugs encontrados na Fase 4 (Voz), segunda etapa — ajuste 2 (composição, links, widget de status)
+
+Depois de ver a primeira versão da integração rodando, o usuário
+pediu um segundo ajuste, ainda dentro da mesma etapa (nada disso tinha
+sido commitado ainda): a composição sobrava um vazio grande entre o
+dashboard e os controles; a área de legenda não tinha propósito real;
+os ícones ainda eram emoji; faltava um widget discreto de contexto
+(data/hora/clima/localização).
+
+### Layout: dashboard cresce pra preencher a janela (`flex: 1` em cascata)
+
+`#top` (esfera + os 4 painéis) virou `flex: 1` dentro da coluna do
+`body`, ocupando toda a altura disponível até a barra de legenda —
+antes ficava com altura fixa (a esfera tinha `height: 440px` fixo),
+sobrando uma faixa preta vazia entre o dashboard e os controles do
+rodapé. Os `.panel` (cartões) também viraram `flex: 1` dentro da sua
+coluna, então crescem junto — o conteúdo de cada um fica centralizado
+verticalmente (`.panel .body { justify-content: center }`), exceto o
+gráfico de atividade (`#activity-chart`), que faz mais sentido
+esticar de verdade pra preencher o espaço extra (o SVG já usava
+`preserveAspectRatio="none"` desde a Fase 4 parte 4 — só faltava a CSS
+não travar a altura renderizada em 46px fixos).
+
+### Legenda com link clicável: ganha um propósito, deixa de ser um vazio
+
+A área abaixo da esfera (`#stage`), que antes só mostrava um texto de
+dica fixo, passou a mostrar o estado passageiro ("🎙 ouvindo...", "💭
+pensando...") e, depois de cada resposta, o TEXTO da resposta — e,
+quando ela contém uma URL ou um caminho de arquivo absoluto real (ex.:
+um SVG que `graphics.create_svg` acabou de salvar em
+`~/SarahProjects/<projeto>/assets/...`), um botão/chip clicável que
+abre o link/arquivo via `shell.openExternal`/`shell.openPath`
+(`sarah:openLink`, novo handler IPC — mesma camada de UI local que a
+voz, não passa pelo Gateway: é o usuário clicando num resultado que a
+SARAH já produziu, não uma decisão nova do agente).
+
+**Bug real encontrado testando com o usuário**: o chip aparecia mas o
+clique não abria nada, sem erro visível nenhum. Causa: a extração do
+link usava uma regex que só excluía espaço, aspas e parênteses do
+final do caminho — mas as respostas da SARAH costumam envolver
+caminhos de arquivo em markdown (`` `/Users/.../arquivo.svg` ``), e a
+crase do fim ficava colada no "link" extraído, fazendo
+`shell.openPath` procurar um arquivo que não existe (o caminho real
+mais um caractere a mais). Corrigido excluindo crase e asterisco do
+conjunto de caracteres aceitos na regex, e revalidado — o chip abriu o
+arquivo de verdade depois da correção. Corrigido também o
+silenciamento em si: antes o clique não checava o resultado da
+`ipcMain.handle`; agora, se `openLink` falhar, o próprio chip mostra a
+mensagem de erro por alguns segundos antes de voltar ao normal — pra
+uma falha futura (arquivo apagado, permissão negada) nunca mais ficar
+muda.
+
+### Widget de status: hora/data sempre, clima/localização quando autorizado
+
+Canto discreto da janela (`#status-widget`), sem competir com a
+esfera. Hora/data não dependem de rede nem permissão nenhuma
+(`Date`/`toLocaleTimeString`, atualizado a cada 15s). Clima e
+localização dependem de duas coisas:
+
+- **Localização**: `navigator.geolocation.getCurrentPosition` no
+  renderer — API do PRÓPRIO Chromium, não um `fetch` (por isso não
+  esbarra na CSP `default-src 'self'` da janela). No macOS, o
+  Chromium usa o Core Location do sistema por baixo — MESMA categoria
+  de permissão (Ajustes > Privacidade e Segurança > Serviços de
+  Localização) já usada pra Calendar/Reminders/Notes nas fases
+  anteriores, só que disparada pelo próprio processo do Electron em
+  vez de um `osascript` filho (não existe bridge JXA pra localização
+  como existe pro EventKit). Precisou de um passo a mais que os
+  outros: o Electron NEGA toda permissão do Chromium por padrão
+  quando não há `setPermissionRequestHandler` registrado — adicionado
+  em `main-process.ts`, liberando explicitamente só `geolocation` (e
+  mais nada — este app nunca usa câmera/microfone via `getUserMedia`,
+  a gravação de voz é `sox`/`rec` via `child_process`).
+- **Clima**: API pública da Open-Meteo (`/v1/forecast?...&current=
+  temperature_2m,weather_code`), sem chave pra uso não-comercial —
+  conferido na documentação atual antes de implementar, como pedido
+  explicitamente (não assumido de memória). Código WMO traduzido pra
+  uma descrição curta em português (tabela pequena, só as faixas mais
+  comuns).
+- **Geocodificação reversa** (coordenadas → cidade/país, pro texto do
+  widget, já que a Open-Meteo não devolve isso): API client-side
+  gratuita da BigDataCloud (`api-bdc.net/data/reverse-geocode-client`),
+  também sem chave — igualmente conferida na documentação atual antes
+  de usar (a URL correta é `api-bdc.net`, não `api.bigdatacloud.net`
+  como a memória do modelo sugeriria de cabeça).
+
+As duas chamadas de rede (clima + geocodificação reversa) rodam no
+PROCESSO PRINCIPAL (`sarah:weather`, novo handler IPC), nunca no
+renderer — reforça a mesma regra já seguida em todo o app: a CSP da
+janela (`default-src 'self'`) nunca precisou ganhar um `connect-src`
+liberado pra host nenhum externo, porque o renderer só pede as
+COORDENADAS (API do navegador) e delega a busca de verdade pro
+processo principal, que já tem acesso de rede irrestrito.
+
+### Ícones: emoji trocado por SVG monocromático
+
+🎤/⌨️ trocados por SVG inline com `stroke="currentColor"` — mesmo
+traço/paleta dos glifos de tarefa que já reagiam no núcleo da esfera
+desde a Fase 4 parte 4. Vantagem prática, não só estética: com
+`currentColor`, o estado "gravando" do microfone (que já mudava a cor
+do botão pra vermelho) recolore o ícone automaticamente, sem precisar
+de um SVG alternativo pro estado ativo.
+
+### Validação — de ponta a ponta, com o usuário
+
+Sem acesso a clicar na janela a partir daqui: cada item pedido
+validado separadamente pelo usuário rodando o app de verdade —
+composição sem espaço vazio (esfera+cards preenchendo até perto do
+rodapé); ícones SVG e widget de data/hora/clima/localização (incluindo
+o popup de permissão de Localização do macOS) aparecendo certos; link
+clicável funcionando de ponta a ponta DEPOIS do bug da crase corrigido
+(pedido de criar um SVG via `graphics.create_svg`, chip aparecendo na
+legenda, clique abrindo o arquivo de verdade); e, revisitando a
+validação da etapa anterior que ainda não tinha sido feita, o
+microfone de ponta a ponta nos dois idiomas (português e inglês),
+confirmado funcionando pelo usuário.
+
+**Fase 4 (Voz) está completa — as duas etapas.**

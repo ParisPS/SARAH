@@ -22,4 +22,37 @@ contextBridge.exposeInMainWorld("sarah", {
   history: (limit) => ipcRenderer.invoke("sarah:history", limit),
   /** Dados reais do dashboard (status de integrações + agregações do audit log). */
   dashboard: () => ipcRenderer.invoke("sarah:dashboard"),
+  /**
+   * Transcrição da conversa desta sessão (Fase 4 parte 2 — migrou do
+   * painel principal, que não mostra mais a lista de mensagens por
+   * padrão, pro painel de histórico). Guardada em memória no processo
+   * principal, não persistida — mesmo tempo de vida que a lista de
+   * mensagens já tinha antes dessa mudança.
+   */
+  conversationHistory: () => ipcRenderer.invoke("sarah:conversationHistory"),
+  /**
+   * Voz (Fase 4 parte 2, ver @sarah/voice): `startRecording` começa a
+   * gravar (devolve na hora, não espera terminar); `awaitRecording`
+   * fica pendurada até a gravação acabar sozinha (silêncio detectado)
+   * OU `stopRecording` ser chamado (clique de novo no microfone) —
+   * devolve `{ ok, text, language }` (texto e idioma DETECTADO,
+   * autônomo) ou `{ ok: false, error }`. `speak` fala um texto na voz
+   * do IDIOMA DE SAÍDA escolhido (independente do idioma detectado na
+   * entrada) e só resolve quando termina de falar.
+   */
+  startRecording: () => ipcRenderer.invoke("sarah:startRecording"),
+  stopRecording: () => ipcRenderer.invoke("sarah:stopRecording"),
+  awaitRecording: () => ipcRenderer.invoke("sarah:awaitRecording"),
+  speak: (text, language) => ipcRenderer.invoke("sarah:speak", text, language),
+  /**
+   * Widget de status (Fase 4 parte 2, etapa 2): `weather` recebe
+   * coordenadas já obtidas no renderer (`navigator.geolocation`) e
+   * devolve `{ ok, tempC, weatherCode, city, country }` — as chamadas
+   * de rede de verdade (Open-Meteo + BigDataCloud) rodam no processo
+   * principal, nunca aqui. `openLink` abre uma URL/caminho de arquivo
+   * real que apareceu numa resposta da SARAH (link clicável na área
+   * de legenda).
+   */
+  weather: (latitude, longitude) => ipcRenderer.invoke("sarah:weather", latitude, longitude),
+  openLink: (link) => ipcRenderer.invoke("sarah:openLink", link),
 });

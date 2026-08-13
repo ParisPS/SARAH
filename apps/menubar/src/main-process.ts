@@ -1,8 +1,11 @@
-import { app, Tray, Menu, BrowserWindow, nativeImage, dialog, ipcMain, screen } from "electron";
+import { app, Tray, Menu, BrowserWindow, nativeImage, dialog, ipcMain, screen, session, shell } from "electron";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import type { ConfirmFn } from "@sarah/permissions";
-import { spawnSarahDaemon, type SarahDaemon } from "./sarah-daemon.js";
+import { startRecording, transcribe, speak, type Recorder } from "@sarah/voice";
+import { spawnSarahDaemon, type SarahDaemon, type ToolUsage } from "./sarah-daemon.js";
 
 /**
  * `apps/menubar` — segunda interface da SARAH (Fase 4, parte 2), lado
@@ -52,6 +55,51 @@ import { spawnSarahDaemon, type SarahDaemon } from "./sarah-daemon.js";
  * contexto do ícone); bolhas de conversa com identidade visual
  * própria (paleta azul consistente com o holograma). Nada disso mudou
  * o Gateway/audit log/memória/`apps/cli` — só a camada visual/UX.
+ *
+ * FASE 4 (VOZ), PARTE 2 — integração na interface, depois de STT/TTS
+ * validados isolados na parte 1 (ver docs/architecture.md pro runbook
+ * e os achados reais de gravação/transcrição): esfera vira o elemento
+ * DOMINANTE da tela, sem lista de mensagens empilhadas por padrão — a
+ * conversa migrou pro painel de histórico (`renderer/history.html`,
+ * que ganhou uma seção de conversa além da tabela do Gateway que já
+ * tinha). Botão de microfone sempre visível (`@sarah/voice`, gravação
+ * via `sox`/`rec`, para sozinha com silêncio ou no clique de novo);
+ * campo de texto minimizado por padrão, expande só quando o ícone de
+ * teclado é clicado. Toggle PT/EN na interface escolhe a VOZ DE SAÍDA
+ * (Luciana/Samantha) — sempre independente do idioma que o usuário
+ * fala/digita, que o STT detecta sozinho. Toda resposta é falada em
+ * voz alta, mesmo vinda de texto digitado — comportamento confirmado
+ * explicitamente com o usuário antes de implementar. `@sarah/voice`
+ * roda inteiro neste processo (Electron), nunca no daemon filho — não
+ * precisa de `@sarah/core`/Gateway/audit log, é plumbing de UI local,
+ * mesmo raciocínio que já vale pro dialog de confirmação nativo.
+ *
+ * FASE 4 (VOZ), PARTE 2, ETAPA 2 — ajustes pedidos depois de ver a
+ * primeira versão rodando: layout cresce pra ocupar a janela inteira
+ * (sem faixa preta vazia entre o dashboard e os controles); a área de
+ * legenda (`#stage` no renderer) ganhou um propósito de verdade —
+ * mostra a última resposta e, quando ela contém um link/caminho real
+ * (site, arquivo gerado), um botão clicável que abre via
+ * `shell.openExternal`/`shell.openPath` (handler `sarah:openLink`
+ * abaixo); microfone e teclado trocaram o emoji por ícone SVG
+ * (`renderer/index.html`, mesma paleta/traço dos glifos de tarefa que
+ * já existiam); novo widget discreto de data/hora/clima/localização
+ * no canto — localização vem da API de geolocalização do Chromium
+ * (`navigator.geolocation` no renderer, que no macOS usa o Core
+ * Location do sistema por baixo — MESMA categoria de permissão do
+ * Painel de Privacidade usada por Calendar/Reminders/Notes, só que
+ * disparada pelo próprio Electron em vez de um `osascript` filho,
+ * porque não existe bridge JXA pra localização como existe pro
+ * EventKit) e clima vem da API pública da Open-Meteo (sem chave, uso
+ * não-comercial — conferido na documentação atual antes de usar) +
+ * geocodificação reversa (coordenadas → cidade/país) via a API
+ * gratuita client-side da BigDataCloud (`api-bdc.net`, também sem
+ * chave). As duas chamadas de rede rodam AQUI, no processo principal
+ * — nunca no renderer, que continua com CSP `default-src 'self'` sem
+ * `connect-src` liberado pra nenhum host externo; o renderer só pede
+ * as COORDENADAS (API do navegador, não é fetch) e delega a busca de
+ * verdade pro processo principal via IPC, mesmo padrão já usado pra
+ * tudo que fala com o mundo fora desta janela.
  */
 
 // Este processo (o do Electron) não precisa carregar `.env` — quem usa
@@ -70,6 +118,36 @@ let win: BrowserWindow | null = null;
 let historyWin: BrowserWindow | null = null;
 let daemon: SarahDaemon | null = null;
 let isQuitting = false;
+
+/**
+ * Transcrição da conversa desta sessão (Fase 4 parte 2) — migrou pro
+ * painel de histórico, já que a janela principal não mostra mais a
+ * lista de mensagens por padrão (a esfera é o elemento dominante).
+ * Só em memória, mesmo tempo de vida que a lista de mensagens já
+ * tinha antes (perdida ao reiniciar o app — não é um requisito novo
+ * de persistência, só mudou ONDE é mostrada). Alimentada dentro do
+ * próprio handler de `sarah:ask` abaixo — é o único lugar que já vê o
+ * prompt E o resultado, sem precisar de mais uma viagem de IPC.
+ */
+interface ConversationEntry {
+  who: "user" | "sarah" | "erro";
+  text: string;
+  tools?: ToolUsage[];
+  timestamp: string;
+}
+const conversationLog: ConversationEntry[] = [];
+
+/**
+ * Gravação de voz em andamento (Fase 4 parte 2, ver @sarah/voice) —
+ * no máximo UMA por vez (o botão de microfone da interface já
+ * garante isso, mas o processo principal confere de novo, fail-safe).
+ * `pendingResult` é a mesma Promise devolvida pro primeiro
+ * `sarah:awaitRecording` — guardada aqui pra uma eventual chamada
+ * repetida (ex.: renderer recarregado no meio) reaproveitar em vez de
+ * disparar `transcribe()` duas vezes pro mesmo áudio.
+ */
+let activeRecorder: Recorder | null = null;
+let pendingRecordingResult: Promise<{ ok: boolean; text?: string; language?: string; error?: string }> | null = null;
 
 /**
  * Ícone de Tray gerado em código (um círculo preto simples, 18x18,
@@ -132,8 +210,14 @@ const confirmViaDialog: ConfirmFn = async (toolName, toolInput, preview) => {
 // pra 3 colunas lado a lado (painéis | esfera | painéis) — mais larga
 // (a esfera+painéis cabem numa faixa mais baixa) e um pouco mais alta
 // (cartões com padding generoso, não mais coladas).
+// Fase 4 parte 2 (voz): a lista de mensagens (que ocupava boa parte da
+// altura, `flex: 1`) saiu da janela principal — migrou pro painel de
+// histórico, ver `history.html`. A esfera cresceu pra ocupar o espaço
+// liberado (é o elemento dominante da tela agora, pedido explícito),
+// mas sem precisar de uma janela tão alta quanto antes: encolhe de
+// 800 pra 640.
 const WINDOW_WIDTH = 820;
-const WINDOW_HEIGHT = 800;
+const WINDOW_HEIGHT = 640;
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -251,8 +335,11 @@ function openHistoryWindow(): void {
   }
   const here = dirname(fileURLToPath(import.meta.url));
   historyWin = new BrowserWindow({
-    width: 460,
-    height: 420,
+    // Fase 4 parte 2 (voz): a janela cresceu (460x420 -> 480x620) pra
+    // caber a seção nova de conversa, além da tabela de decisões do
+    // Gateway que já existia.
+    width: 480,
+    height: 620,
     title: "SARAH — Histórico",
     webPreferences: {
       preload: join(here, "..", "preload.cjs"),
@@ -272,6 +359,17 @@ function openHistoryWindow(): void {
 app.whenReady().then(() => {
   // Sem ícone no Dock — é um app de menu bar, o Tray já é a UI.
   app.dock?.hide();
+
+  // Fase 4 parte 2, etapa 2: o Electron já nega TODA permissão do
+  // Chromium por padrão quando não há handler nenhum registrado — mas
+  // deixamos explícito (em vez de depender do default implícito) que
+  // só `geolocation` é permitida (pro widget de status), e só ela.
+  // Câmera/microfone do navegador nunca são pedidos por este app (a
+  // gravação de voz usa `sox`/`rec` via child_process, não
+  // `getUserMedia`), então continuam negados.
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === "geolocation");
+  });
 
   tray = new Tray(buildTrayIcon());
   tray.setToolTip("SARAH");
@@ -298,7 +396,19 @@ app.whenReady().then(() => {
 
   ipcMain.handle("sarah:ask", async (_event, prompt: unknown) => {
     if (!daemon) return { ok: false, error: "Sessão da SARAH ainda não foi iniciada." };
-    return daemon.ask(String(prompt));
+    const promptText = String(prompt);
+    const result = await daemon.ask(promptText);
+    // Log da conversa (Fase 4 parte 2) — único lugar que vê prompt E
+    // resultado juntos, sem IPC extra. Guarda ANTES de devolver pro
+    // renderer, pra `sarah:conversationHistory` já enxergar este turno
+    // mesmo se chamado logo em seguida.
+    conversationLog.push({ who: "user", text: promptText, timestamp: new Date().toISOString() });
+    conversationLog.push(
+      result.ok
+        ? { who: "sarah", text: result.text || "(sem resposta em texto)", tools: result.tools, timestamp: new Date().toISOString() }
+        : { who: "erro", text: result.error, timestamp: new Date().toISOString() }
+    );
+    return result;
   });
 
   ipcMain.handle("sarah:history", async (_event, limit: unknown) => {
@@ -309,6 +419,126 @@ app.whenReady().then(() => {
   ipcMain.handle("sarah:dashboard", async () => {
     if (!daemon) return null;
     return daemon.dashboard();
+  });
+
+  ipcMain.handle("sarah:conversationHistory", async () => conversationLog);
+
+  /**
+   * Voz (Fase 4 parte 2, ver @sarah/voice pro mecanismo em si —
+   * `sox`/`rec` com o efeito `silence`, validado isolado na etapa
+   * anterior). O arquivo `.wav` temporário vive em `app.getPath("temp")`
+   * (pasta de temporários real do SO, não a pasta de nenhum projeto) e
+   * é apagado (best-effort) depois de transcrito, esteja o resultado
+   * certo ou não.
+   */
+  ipcMain.handle("sarah:startRecording", async () => {
+    if (activeRecorder) return { ok: false, error: "Já existe uma gravação em andamento." };
+    const outPath = join(app.getPath("temp"), `sarah-rec-${randomUUID()}.wav`);
+    const recorder = startRecording(outPath);
+    activeRecorder = recorder;
+    pendingRecordingResult = recorder.finished
+      .then(async () => {
+        try {
+          const { text, language } = await transcribe(outPath);
+          return { ok: true, text, language };
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        } finally {
+          await unlink(outPath).catch(() => {});
+        }
+      })
+      .finally(() => {
+        activeRecorder = null;
+      });
+    return { ok: true };
+  });
+
+  ipcMain.handle("sarah:stopRecording", async () => {
+    activeRecorder?.stop();
+    return { ok: true };
+  });
+
+  ipcMain.handle("sarah:awaitRecording", async () => {
+    if (!pendingRecordingResult) return { ok: false, error: "Nenhuma gravação em andamento." };
+    return pendingRecordingResult;
+  });
+
+  ipcMain.handle("sarah:speak", async (_event, text: unknown, language: unknown) => {
+    await speak(String(text), language === "en" ? "en" : "pt");
+    return { ok: true };
+  });
+
+  /**
+   * Widget de status (Fase 4 parte 2, etapa 2) — recebe só as
+   * coordenadas (já obtidas no renderer via `navigator.geolocation`,
+   * que é uma API do navegador, não um fetch — por isso não esbarra
+   * no CSP) e faz as DUAS chamadas de rede de verdade aqui: clima
+   * (Open-Meteo, `current=temperature_2m,weather_code`, sem chave) e
+   * geocodificação reversa (BigDataCloud, endpoint client-side
+   * gratuito, também sem chave) em paralelo. Falha de qualquer uma
+   * das duas não derruba a outra — o widget mostra o que conseguiu.
+   */
+  ipcMain.handle("sarah:weather", async (_event, latitude: unknown, longitude: unknown) => {
+    const lat = Number(latitude);
+    const lon = Number(longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      return { ok: false, error: "Coordenadas inválidas." };
+    }
+    try {
+      const [weatherResult, placeResult] = await Promise.allSettled([
+        fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&timezone=auto`
+        ).then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Open-Meteo respondeu ${res.status}`)))),
+        fetch(`https://api-bdc.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=pt`).then(
+          (res) => (res.ok ? res.json() : Promise.reject(new Error(`BigDataCloud respondeu ${res.status}`)))
+        ),
+      ]);
+
+      const weather = weatherResult.status === "fulfilled" ? weatherResult.value : null;
+      const place = placeResult.status === "fulfilled" ? placeResult.value : null;
+
+      if (!weather && !place) {
+        const reason = weatherResult.status === "rejected" ? weatherResult.reason : placeResult.status === "rejected" ? placeResult.reason : null;
+        throw reason instanceof Error ? reason : new Error("Falha ao buscar clima/localização.");
+      }
+
+      return {
+        ok: true,
+        tempC: weather?.current?.temperature_2m ?? null,
+        weatherCode: weather?.current?.weather_code ?? null,
+        city: place?.city || place?.locality || null,
+        country: place?.countryName || null,
+      };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  /**
+   * Abre um link/caminho real que apareceu numa resposta da SARAH
+   * (ver extração de link em `renderer.js`) — URL vai por
+   * `shell.openExternal` (navegador padrão do sistema), caminho de
+   * arquivo absoluto vai por `shell.openPath` (app padrão pra aquele
+   * tipo de arquivo, ex.: Preview pra imagem/SVG). Mesma camada de UI
+   * local que `confirmViaDialog`/voz — não passa pelo Gateway, porque
+   * não é uma tool decidida pelo agente, é o usuário clicando num
+   * resultado que a SARAH já produziu.
+   */
+  ipcMain.handle("sarah:openLink", async (_event, link: unknown) => {
+    const target = String(link ?? "").trim();
+    if (!target) return { ok: false, error: "Link vazio." };
+    try {
+      if (/^https?:\/\//i.test(target)) {
+        await shell.openExternal(target);
+      } else {
+        const expanded = target.startsWith("~") ? join(app.getPath("home"), target.slice(1)) : target;
+        const errorMessage = await shell.openPath(expanded);
+        if (errorMessage) throw new Error(errorMessage);
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   });
 });
 
