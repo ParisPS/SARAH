@@ -138,6 +138,18 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   escopo original, só a parte de interface está pronta. O holograma já
   tem um gancho pronto (`setAudioLevel`) pra reagir a volume de voz
   quando essa etapa começar.
+- **Voz, primeira etapa — capacidade de áudio validada isolada, AINDA
+  NÃO integrada na interface**: STT (`whisper.cpp` via Homebrew,
+  modelo multilíngue `ggml-small.bin`, detecção automática de
+  português/inglês) e TTS (`say` nativo do macOS, vozes Luciana pt_BR
+  + Samantha en_US) testados com ÁUDIO REAL — gravação ao vivo do
+  usuário transcrita corretamente nos dois idiomas, TTS confirmado ao
+  vivo e por round-trip objetivo (gera áudio → transcreve → compara
+  texto). `apps/menubar`/`apps/cli` não foram tocados nesta etapa —
+  ver `docs/architecture.md` pros achados reais (Homebrew desatualizado
+  não reconhecia o macOS desta máquina, captura de mic padrão do
+  `whisper-cpp` trava, `sox`/`rec` acabou sendo o caminho confiável) e
+  pro runbook de gravação validado.
 - **Validado:** terminal revalidado como idêntico depois da
   refatoração do Gateway; protocolo do daemon (tools, confirmação de
   alto risco, histórico, dashboard) testado isolado, sem Electron no

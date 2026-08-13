@@ -3446,3 +3446,164 @@ verdade contra um projeto já existente do usuário
 commit (nunca direto na main/master), confirmação de alto risco
 exercida de verdade antes do push, PR aparecendo no GitHub, e nenhum
 merge automático em nenhum dos dois casos.
+
+---
+
+## Decisões e bugs encontrados na Fase 4 (Voz), primeira etapa — capacidade de áudio isolada (STT+TTS)
+
+Objetivo desta etapa, pedido explícito do usuário: só validar que
+STT (entender fala) e TTS (falar) FUNCIONAM DE VERDADE nesta máquina,
+isolados — mesmo padrão já usado pra Electron/Podman (testar a
+capacidade crua antes de integrar na interface). **NADA foi integrado
+em `apps/menubar`/`apps/cli` nesta etapa** — isso é a próxima, só
+depois de STT/TTS provarem funcionar isolados, o que aconteceu aqui.
+
+### STT: whisper.cpp via Homebrew — viável, modelo MULTILÍNGUE
+
+`brew install whisper-cpp` instala vários binários (`whisper-cli`,
+`whisper-stream`, `whisper-server`, etc.), com suporte a Metal/GPU
+nativo (confirmado no log: `GPU name: Apple M1`, backend MTL0 em uso).
+Modelos NÃO vêm junto — baixados à parte. Usado
+`ggml-small.bin` (multilíngue, ~487MB, NÃO o `.en`-only) — pedido
+explícito do usuário, já que o requisito é entender português E
+inglês com detecção automática do idioma (`-l auto`), o usuário nunca
+escolhe idioma de entrada.
+
+**Bug real encontrado ANTES de sequer poder instalar**: o Homebrew
+desta máquina estava em 4.2.17, e `brew info`/`brew install` falhavam
+com `unknown or unsupported macOS version: "26.5.1"` — o próprio
+Homebrew não reconhecia essa versão do macOS. Corrigido com `brew
+update` (pulou pra 6.0.17, aí sim reconheceu 26.5.1). Sem isso, nada
+do resto desta etapa teria funcionado — checado antes de assumir que
+"Homebrew tá instalado" bastava.
+
+### TTS: comando `say` nativo — vozes confirmadas de verdade, não assumidas
+
+`say -v '?'` (aspas obrigatórias — sem elas o `?` vira glob do zsh e
+falha com "no matches found") lista as vozes REALMENTE instaladas:
+
+- **Luciana** (`pt_BR`) — confirmada, existe.
+- **Samantha** (`en_US`) — confirmada, existe.
+- **Nenhuma voz "Enhanced"/"Premium" está baixada nesta máquina** — a
+  listagem completa de `say -v '?'` não mostra esse sufixo em nenhuma
+  entrada. Baixar uma versão mais natural dessas vozes é possível via
+  Configurações do Sistema → Acessibilidade → Conteúdo Falado (ou
+  "Vozes", o nome exato pode variar por versão do macOS — não
+  verificado independentemente pra este macOS 26.5.1 especificamente,
+  não dá pra navegar Configurações do Sistema por aqui) → Gerenciar
+  Vozes — passo manual do usuário, de propósito NÃO automatizado
+  (pode ser um download grande, decisão dele).
+
+### Achado real: gravar áudio de verdade via CLI no macOS não tem um caminho óbvio
+
+Nenhuma ferramenta de gravação estava disponível (`sox`/`ffmpeg`
+ausentes). `whisper-stream` (binário do próprio whisper-cpp, já tem
+captura de mic embutida via SDL2 — parecia a opção óbvia) teve DOIS
+problemas reais, descobertos testando, não hipotéticos:
+
+1. **Dispositivo de captura padrão trava indefinidamente**: com
+   `--capture -1` (padrão), o processo trava pra sempre em "attempt
+   to open default capture device", sem erro, sem prompt visível, sem
+   progresso — três dispositivos foram detectados (`iPhone de Paris
+   Microphone`, `MacBook Air Microphone`, `Microsoft Teams Audio`), e
+   o padrão escolhido (provavelmente o microfone de Continuidade do
+   iPhone) nunca abre. Corrigido especificando o dispositivo real do
+   Mac explicitamente (`-c 1`, "MacBook Air Microphone").
+2. **`--save-audio` produz arquivo corrompido/silencioso se o
+   processo for morto com SIGALRM** (usado inicialmente via `perl -e
+   'alarm(N); exec(...)'`, já que o macOS não tem o comando `timeout`
+   do GNU coreutils por padrão): o arquivo `.wav` saía com um cabeçalho
+   válido de ~30s mas RMS zero (silêncio digital) — confirmado
+   analisando as amostras com um script Python, não só "parecia
+   estranho". Trocar pra `SIGINT` (via um processo `fork` + `kill`
+   depois de um `select(undef,undef,undef,N)`, sem chamar `sleep`)
+   fez o processo encerrar limpo, mas mesmo assim o buffer salvo tinha
+   semântica de tempo confusa (áudio de verdade só nos ÚLTIMOS
+   segundos de um arquivo de ~34s, resto silêncio) — não confiável
+   pra capturar uma duração exata e previsível.
+
+**Resolvido trocando pra `sox`/`rec`** (`brew install sox`, pacote
+pequeno e comum, instalado sem pausar pra confirmar de novo — mesma
+decisão já aprovada de "instalar ferramenta de áudio"): `rec -c 1 -r
+16000 arquivo.wav`, encerrado com o MESMO padrão `fork` + `select` +
+`kill("INT", ...)` — produz um `.wav` limpo, com duração EXATA e
+previsível, confirmada por `soxi`. Detalhe real: o driver `coreaudio`
+não aceita 16000Hz direto (loga um aviso e usa 44100 internamente),
+mas o arquivo final sai resample para 16000Hz mono como pedido — sem
+intervenção manual.
+
+**Runbook validado pra gravar N segundos de áudio real por CLI nesta
+máquina** (referência pra quando a integração de verdade acontecer):
+
+```
+perl -e '
+  $pid = fork();
+  if ($pid == 0) { exec(@ARGV) or die; }
+  else { select(undef,undef,undef, N); kill("INT", $pid); waitpid($pid, 0); }
+' -- rec -c 1 -r 16000 arquivo.wav
+```
+
+### Validação — áudio REAL gravado ao vivo pelo usuário, não sintetizado
+
+Duas tentativas iniciais falharam por motivo de PROCESSO, não de
+código — documentado pra não repetir: a primeira gravação capturou
+um trecho de um vídeo em espanhol que o usuário estava assistindo (ele
+não tinha visto a mensagem a tempo de falar); a segunda saiu
+`[BLANK_AUDIO]` (RMS baixo e constante, sem padrão de fala — a janela
+de 6-7s não foi suficiente pra sincronizar aviso-por-texto com fala
+ao vivo). Corrigido aumentando a janela pra ~14s e confirmando com o
+usuário o que tinha acontecido (`AskUserQuestion`) antes de tentar nas
+cegas de novo — achado de processo relevante pra quando a voz for
+integrada de verdade na interface: vai precisar de um sinal
+claro/imediato de "SARAH está ouvindo agora" (ex.: indicação visual no
+holograma), não só uma mensagem de texto, porque o atraso entre "ler a
+mensagem" e "começar a falar" é real e variável.
+
+Com 14s de janela, as duas gravações reais funcionaram:
+
+- **Português**: usuário falou "Hoje é um dia ensolarado e eu gosto
+  de programar." — RMS mostrou o padrão de fala claro (picos de
+  400-800 a partir do segundo 4, contra ruído de base ~25). Transcrito
+  como **`pt` (confiança 96,9%)**: *"Hoje é um dia ensolarado e eu
+  gosto de programar."* — bate PALAVRA POR PALAVRA com o que foi
+  falado.
+- **Inglês**: usuário falou "The weather today is sunny and I really
+  enjoy programming." — RMS confirma fala real desde o segundo 1.
+  Transcrito como **`en` (confiança 72,9%)**: o texto pedido aparece
+  correto, repetido algumas vezes (o usuário repetiu a frase durante a
+  janela mais longa, não é bug de transcrição).
+
+### Validação do TTS — tocado ao vivo E verificado objetivamente por round-trip
+
+`say -v Luciana "..."` e `say -v Samantha "..."` tocados ao vivo pros
+alto-falantes do Mac. Verificação OBJETIVA, não só "achei que soou
+bem": gerado o áudio de cada um em arquivo (`say -v <voz> -o
+arquivo.wav --data-format=LEI16@22050 "..."` — achado real: esse
+`--data-format` só funciona com saída `.wav`, com `.aiff` falha com
+"Opening output file failed: fmt?") e retranscrito com o MESMO
+`whisper-cli`/modelo `small`:
+
+- Luciana (pt_BR): auto-detectado **`pt`, confiança 90,9%** — texto
+  transcrito bate quase exato com o original (só a grafia de "SARAH"
+  saiu como "Sara", esperado — é a pronúncia sendo interpretada pelo
+  STT, não um defeito do TTS).
+- Samantha (en_US): auto-detectado **`en`, confiança 99,1%** — texto
+  bate quase exato ("Sarah" em vez de "SARAH", mesmo motivo).
+
+### Comportamento confirmado com o usuário, pra quando integrar
+
+Toda resposta é falada em voz alta, MESMO quando o pedido foi
+digitado (não só quando veio por voz) — decisão confirmada
+explicitamente antes de implementar, registrada aqui pra não virar
+suposição na hora de integrar.
+
+### Conclusão desta etapa
+
+STT (whisper.cpp, modelo multilíngue `small`, detecção automática de
+idioma) e TTS (`say`, vozes Luciana/Samantha) **provados viáveis nesta
+máquina com áudio real** — gravação ao vivo transcrita corretamente
+nos dois idiomas, TTS validado tanto ao vivo quanto por round-trip
+objetivo. `apps/menubar`/`apps/cli` **NÃO foram tocados** — integração
+(captura de mic pela interface, indicador visual de "ouvindo",
+reprodução da resposta falada) é a PRÓXIMA etapa, de propósito fora do
+escopo desta.
