@@ -2431,11 +2431,42 @@ agente:
   rodada, antes do fix, gerava um círculo sem texto nenhum — revalidado
   depois do `ttf-dejavu` que o mesmo SVG passa a renderizar certo).
 
-**Não verificado por mim**: abrir o SVG no Adobe Illustrator — não
-tenho o aplicativo disponível pra testar. O arquivo é um SVG 1.1
-simples e padrão (namespace declarado, `viewBox`, formas básicas +
-texto, sem nada exótico), então a expectativa é que abra normalmente,
-mas essa confirmação específica fica pro usuário.
+**Ajuste no critério de validação** (usuário sem Illustrator disponível
+no momento): em vez de abrir no Illustrator, validado que `logo.svg`
+abre corretamente num navegador de verdade (Chrome, via `open -a
+"Google Chrome"`) e que `logo.png`/`logo.jpg` abrem no visualizador de
+imagem padrão do macOS (Preview, via `open` sem app específico) —
+**confirmado visualmente pelo usuário**, olhando as três janelas
+abertas, que o círculo azul com a letra "S" aparece certinho nas três.
+O teste do Illustrator continua pendente, não bloqueante, pra quando
+o usuário tiver o aplicativo disponível.
+
+### Quase-incidente durante esta validação: segredo exposto num screenshot
+
+Tentando confirmar visualmente EU MESMO (em vez de só pedir pro
+usuário olhar), tirei um screenshot de tela cheia (`screencapture`)
+pra conferir o Chrome — mas o foco da tela estava no VSCode, não no
+Chrome, e o screenshot capturou o terminal integrado com o **Personal
+Access Token do GitHub em texto puro** (do `pnpm github:auth` rodado
+numa sessão anterior, ainda no scrollback). Apagado imediatamente
+depois de perceber. Numa segunda tentativa, mesmo confirmando o app em
+primeiro plano ANTES da captura (via `lsappinfo front`, que não
+depende de permissão de Acessibilidade), o foco mudou de novo entre a
+checagem e a captura de fato — esse arquivo foi apagado SEM ser aberto
+(por precaução, não arrisquei olhar de novo). Diagnóstico: o foco de
+janela nesta máquina muda rápido/imprevisivelmente demais pra
+`screencapture` automatizado ser confiável sem risco real de capturar
+conteúdo sensível de outra janela.
+
+**Decisão**: parar de tentar screenshot automatizado como método de
+validação visual. Pra confirmar renderização visual de verdade, a
+tarefa passa a ser: abrir os arquivos com `open`/`open -a` (o comando
+em si não expõe nada, só instrui o macOS a abrir a janela) e pedir
+confirmação direta do usuário olhando a própria tela — exatamente o
+que já era o padrão pro Illustrator, agora estendido a qualquer
+verificação visual que dependeria de eu "ver a tela" via screenshot.
+Perguntado ao usuário se queria revogar o token exposto — decisão dele
+foi manter o token como está.
 
 ## Bug real encontrado fora do escopo da Fase 5 parte 4 — shutdown do `apps/menubar` deixava container órfão
 
@@ -2703,6 +2734,11 @@ delegate), e a imagem base não tinha nenhuma fonte instalada (texto em
 SVG renderizava invisível, sem nenhum erro — só percebido abrindo o
 PNG de verdade). Validado de ponta a ponta via o agente real, no
 mesmo projeto de teste da parte 3: logo criado em SVG, exportado pra
-PNG e JPG, as duas imagens abertas e conferidas visualmente (círculo
-azul com a letra "S" legível). Abrir o SVG no Illustrator fica pro
-usuário confirmar — sem o aplicativo disponível pra testar aqui.
+PNG e JPG, as duas imagens abertas e conferidas visualmente. Critério
+de validação ajustado depois (usuário sem Illustrator disponível):
+SVG aberto no Chrome, PNG/JPG abertos no Preview, **confirmados
+visualmente pelo próprio usuário** — não por screenshot automatizado
+(ver "quase-incidente" logo acima: uma tentativa de screenshot chegou
+a capturar um token do GitHub em texto puro no terminal por trás,
+apagado na hora; decisão foi parar de automatizar captura de tela pra
+validação visual). Illustrator continua pendente, não bloqueante.
