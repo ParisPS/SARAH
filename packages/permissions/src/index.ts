@@ -1,6 +1,13 @@
 import type { CanUseTool, PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
-export type RiskLevel = "low" | "high";
+/**
+ * Fase 7 parte 3: `"medium"` chegou pra cobrir o meio-termo entre
+ * "roda sem perguntar" e "sempre pausa e pergunta" — ver
+ * `MEDIUM_RISK_TOOLS`/`isAutoApprovedMediumRisk` abaixo pro
+ * raciocínio completo (documentado também em
+ * `docs/architecture.md`, seção da Fase 7 parte 3).
+ */
+export type RiskLevel = "low" | "medium" | "high";
 export type Decision = "auto-allow" | "confirmed" | "denied";
 
 /**
@@ -69,16 +76,23 @@ const LOW_RISK_TOOLS = new Set<string>([
   "mcp__sarah-apple-notes__list_notes",
   "mcp__sarah-apple-notes__create_note",
   // Sandbox de código (Fase 5, parte 1): a garantia de segurança destas
-  // cinco tools vem do ISOLAMENTO DO CONTAINER em si — validado de
+  // quatro tools vem do ISOLAMENTO DO CONTAINER em si — validado de
   // verdade (ver docs/architecture.md) que o container não enxerga o
   // filesystem real do Mac fora da pasta do projeto, não alcança a
   // rede local (só internet), e tem limites reais de CPU/memória.
   // Confirmar por linha de comando/arquivo escrito não acrescentaria
   // segurança nenhuma a isso — por isso todas entram como baixo risco,
-  // igual às outras integrações aditivas/reversíveis.
+  // igual às outras integrações aditivas/reversíveis. `run_command`
+  // fica DE FORA desta lista — a partir da Fase 7 parte 3 ela é risco
+  // MÉDIO (ver `MEDIUM_RISK_TOOLS` abaixo): o isolamento do container
+  // continua sendo a garantia de que nada FORA do projeto é afetado,
+  // mas DENTRO do projeto um comando arbitrário ainda pode apagar
+  // trabalho do usuário (`rm -rf .`, por exemplo) sem que o container
+  // em si tenha feito nada de errado — essa é uma classe de risco que
+  // as outras quatro tools (caminho e efeito sempre fixos e aditivos)
+  // não têm.
   "mcp__sarah-code__create_project",
   "mcp__sarah-code__write_file",
-  "mcp__sarah-code__run_command",
   "mcp__sarah-code__git_commit",
   "mcp__sarah-code__preview",
   // Fase 6 (Pull Requests): criar uma branch LOCAL nova é a mesma
@@ -147,9 +161,103 @@ const LOW_RISK_TOOLS = new Set<string>([
  */
 const FORCE_HIGH_RISK = [/^mcp__claude_ai_Base44__/];
 
-export function classifyRisk(toolName: string): RiskLevel {
+/**
+ * Fase 7 parte 3 — nuance no risco médio, primeira tool: `run_command`.
+ * DECISÃO tomada (não proposta — ver docs/architecture.md pro
+ * raciocínio completo de por que esta forma e não outras): risco
+ * MÉDIO nunca depende de histórico/confiança acumulada, só do
+ * CONTEÚDO da chamada atual, avaliado do zero a cada vez — o motivo
+ * de existir é justamente impedir que um `rm` real se esconda atrás
+ * de um histórico bom de chamadas anteriores.
+ *
+ * Uma tool médio-risco confirma por padrão, IGUAL alto risco — a
+ * diferença de "médio" pra "alto" não é "confirma menos", é (a)
+ * fricção mais leve na hora de confirmar (ver `ConfirmFn`/apps de
+ * interface) e (b) a EXISTÊNCIA de uma allowlist que permite auto-
+ * aprovar certas chamadas, coisa que risco alto nunca tem (git push,
+ * envio de e-mail, forget de memória continuam SEMPRE confirmando,
+ * sem exceção nenhuma — essa é a fronteira real entre médio e alto,
+ * não o nome do nível).
+ */
+const MEDIUM_RISK_TOOLS = new Set<string>([
+  "mcp__sarah-code__run_command",
+]);
+
+/**
+ * Comandos considerados seguros o bastante pra `run_command` rodar
+ * sem confirmação (mesma fricção de baixo risco), mesmo sendo risco
+ * médio por padrão — leitura/build/teste, nada que escreva ou apague
+ * fora do próprio código-fonte do projeto. Lista inicial pequena DE
+ * PROPÓSITO (mais fácil auditar 9 padrões do que 30) — cresce só com
+ * critério, nunca "pra parar de pedir confirmação".
+ *
+ * Cada padrão casa o COMEÇO do comando (verbo + argumentos fixos, com
+ * fronteira de palavra logo depois — `\s` ou fim de string): `git log
+ * --oneline -20` casa com `git log`, mas um hipotético `git logout`
+ * não casaria com `git log` sozinho graças à fronteira.
+ */
+const RUN_COMMAND_ALLOWLIST: RegExp[] = [
+  /^ls(\s|$)/,
+  /^pwd(\s|$)/,
+  /^cat(\s|$)/,
+  /^npm\s+test(\s|$)/,
+  /^npm\s+run\s+build(\s|$)/,
+  /^npm\s+run\s+dev(\s|$)/,
+  /^git\s+status(\s|$)/,
+  /^git\s+log(\s|$)/,
+  /^git\s+diff(\s|$)/,
+];
+
+/**
+ * Metacaracteres de shell que permitem ENCADEAR ou REDIRECIONAR outro
+ * comando além do primeiro — `;`, `&&`, `||`, `|`, backtick, `$(...)`,
+ * `>`, `>>`, `<`, quebra de linha. Esta é a defesa real contra o
+ * cenário que motivou pedir classificação por CONTEÚDO em vez de
+ * confiar em histórico: sem checar isto, `ls; rm -rf .` passaria pela
+ * allowlist só por COMEÇAR com `ls` — um `rm` de verdade escondido
+ * atrás de um prefixo com "histórico bom". Qualquer um destes símbolos
+ * tira o comando da allowlist INTEIRA, mesmo que o resto pareça
+ * inofensivo — não tenta entender o resto do comando, só recusa com
+ * segurança (cai pra risco médio normal, confirma).
+ */
+const SHELL_CHAINING_PATTERN = /[;&|`\n<>]|\$\(/;
+
+function isAllowlistedCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (SHELL_CHAINING_PATTERN.test(trimmed)) return false;
+  return RUN_COMMAND_ALLOWLIST.some((pattern) => pattern.test(trimmed));
+}
+
+/**
+ * Classifica pelo NOME da tool + `input` da chamada — nunca por
+ * histórico/confiança acumulada (Fase 7 parte 3: avaliado do zero a
+ * cada chamada, de propósito). `input` só importa pra `run_command`
+ * hoje (decide low/medium/high igual, mas quem decide se uma chamada
+ * MÉDIA auto-aprova é `isAutoApprovedMediumRisk`, função separada —
+ * `classifyRisk` sempre devolve o TIER real, mesmo quando a chamada
+ * específica vai rodar sem perguntar).
+ */
+export function classifyRisk(toolName: string, input?: unknown): RiskLevel {
   if (FORCE_HIGH_RISK.some((pattern) => pattern.test(toolName))) return "high";
+  if (MEDIUM_RISK_TOOLS.has(toolName)) return "medium";
   return LOW_RISK_TOOLS.has(toolName) ? "low" : "high";
+}
+
+/**
+ * Só chamada pra risco MÉDIO (baixo sempre auto-aprova, alto nunca
+ * auto-aprova — nem chega a ser chamada pra ele, ver `createGateway`).
+ * Decide se ESTA chamada específica roda direto (mesma fricção de
+ * baixo risco) ou pausa pra confirmar (fricção mais leve que alto
+ * risco, mas ainda pausa). A checagem de conteúdo mora AQUI, não
+ * dentro da tool — mesmo princípio de sempre: nenhuma tool decide o
+ * próprio risco.
+ */
+function isAutoApprovedMediumRisk(toolName: string, input: unknown): boolean {
+  if (toolName === "mcp__sarah-code__run_command") {
+    const command = (input as { command?: unknown } | null)?.command;
+    return typeof command === "string" && isAllowlistedCommand(command);
+  }
+  return false;
 }
 
 /**
@@ -183,8 +291,17 @@ export type FormatConfirmationInput = (toolName: string, input: unknown) => Prom
  * (interface gráfica) acrescenta uma segunda implementação (dialog/
  * janela do Electron) sem este pacote precisar saber que ela existe —
  * mesmo princípio de injeção já usado pra `formatConfirmationInput`.
+ *
+ * Fase 7 parte 3: ganhou o parâmetro `risk` (`"medium"` ou `"high"` —
+ * nunca `"low"`, que nunca chega a chamar `confirm` pra começo de
+ * conversa) pra cada implementação poder apresentar a pergunta de um
+ * jeito PROPORCIONAL: risco alto continua com a fricção dramática de
+ * sempre; risco médio pausa e pergunta do mesmo jeito (nunca roda sem
+ * perguntar só por ser "menos grave"), mas com apresentação mais leve
+ * — sem o aviso "ALTO RISCO", cor/ícone/som menos alarmante conforme a
+ * interface (ver `apps/cli`/`apps/menubar`).
  */
-export type ConfirmFn = (toolName: string, input: unknown, preview: string | null) => Promise<boolean>;
+export type ConfirmFn = (toolName: string, input: unknown, preview: string | null, risk: "medium" | "high") => Promise<boolean>;
 
 export interface DecisionEntry {
   toolName: string;
@@ -220,10 +337,15 @@ export interface GatewayOptions {
  */
 export function createGateway(options: GatewayOptions): CanUseTool {
   return async (toolName, toolInput, callOptions) => {
-    const risk = classifyRisk(toolName);
+    const risk = classifyRisk(toolName, toolInput);
     const toolUseId = callOptions.toolUseID;
 
-    if (risk === "low") {
+    // Baixo risco sempre roda direto. Risco MÉDIO só roda direto se
+    // ESTA chamada específica bater na allowlist (Fase 7 parte 3) —
+    // continua avaliado do zero a cada vez, nunca por histórico. Risco
+    // alto nunca entra aqui, sem exceção nenhuma.
+    const autoApprove = risk === "low" || (risk === "medium" && isAutoApprovedMediumRisk(toolName, toolInput));
+    if (autoApprove) {
       options.onDecision?.({ toolName, input: toolInput, risk, decision: "auto-allow", toolUseId });
       return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
     }
@@ -240,7 +362,10 @@ export function createGateway(options: GatewayOptions): CanUseTool {
       }
     }
 
-    const approved = await options.confirm(toolName, toolInput, preview);
+    // `risk` aqui só pode ser "medium" (sem allowlist) ou "high" — nunca
+    // "low", que já saiu pelo `autoApprove` acima.
+    const confirmRisk: "medium" | "high" = risk === "high" ? "high" : "medium";
+    const approved = await options.confirm(toolName, toolInput, preview, confirmRisk);
     options.onDecision?.({
       toolName,
       input: toolInput,
@@ -255,7 +380,7 @@ export function createGateway(options: GatewayOptions): CanUseTool {
 
     return {
       behavior: "deny",
-      message: "O usuário negou a execução desta ação de alto risco.",
+      message: `O usuário negou a execução desta ação de ${confirmRisk === "high" ? "alto" : "médio"} risco.`,
     } satisfies PermissionResult;
   };
 }

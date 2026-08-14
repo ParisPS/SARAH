@@ -28,6 +28,10 @@
         --card-border: #16233d;
         --danger: #f87171;
         --risk-high: #f5b971;
+        /* Fase 7 parte 3 — âmbar entre o azul de baixo risco e o
+           laranja de alto risco (donut/legenda do painel "Proporção
+           de risco", ver dashboard.js). */
+        --risk-medium: #f5db71;
       }
 
       html,
@@ -354,8 +358,11 @@
       }
       .risk-legend {
         display: flex;
+        flex-wrap: wrap;
         justify-content: center;
-        gap: 14px;
+        /* Fase 7 parte 3: encolhido de 14px pra caber os três níveis
+           (baixo/médio/alto) na mesma largura de coluna sem cortar. */
+        gap: 8px 12px;
         margin-top: 10px;
         font-size: 11px;
         color: #9fb4d4;
@@ -370,6 +377,9 @@
       }
       .risk-legend .swatch.low {
         background: var(--accent-bright);
+      }
+      .risk-legend .swatch.medium {
+        background: var(--risk-medium);
       }
       .risk-legend .swatch.high {
         background: var(--risk-high);

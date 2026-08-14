@@ -19,6 +19,14 @@ function decisionLabel(decision) {
   return decision;
 }
 
+// Fase 7 parte 3: "medium" entra no meio de "low"/"high" — mesmo texto
+// curto em português dos outros dois níveis.
+function riskLabel(risk) {
+  if (risk === "high") return "alto";
+  if (risk === "medium") return "médio";
+  return "baixo";
+}
+
 function renderConversation(entries) {
   if (!entries || entries.length === 0) {
     conversationEl.innerHTML = '<div id="empty">Nenhuma mensagem nesta sessão ainda.</div>';
@@ -44,8 +52,11 @@ function renderConversation(entries) {
       for (const tool of entry.tools) {
         const meta = metaForTool(tool.toolName);
         const chip = document.createElement("span");
-        chip.className = `chip ${tool.risk === "high" ? "high" : ""}`;
-        chip.textContent = `${meta.emoji} ${meta.name} · ${tool.risk === "high" ? "alto risco" : "baixo risco"}`;
+        // Fase 7 parte 3: `risk` ganhou "medium" — chip continua
+        // "" (cor padrão) só pra low, ganha uma classe por nível daqui
+        // pra frente em vez do antigo `? "high" : ""` binário.
+        chip.className = `chip ${tool.risk !== "low" ? tool.risk : ""}`;
+        chip.textContent = `${meta.emoji} ${meta.name} · ${riskLabel(tool.risk)}`;
         toolsEl.appendChild(chip);
       }
       bubble.appendChild(toolsEl);
@@ -83,7 +94,7 @@ function renderGateway(entries) {
     const tdRisk = document.createElement("td");
     const riskBadge = document.createElement("span");
     riskBadge.className = `badge risk-${entry.risk}`;
-    riskBadge.textContent = entry.risk === "high" ? "alto" : "baixo";
+    riskBadge.textContent = riskLabel(entry.risk);
     tdRisk.appendChild(riskBadge);
 
     const tdDecision = document.createElement("td");

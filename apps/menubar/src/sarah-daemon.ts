@@ -21,13 +21,13 @@ export interface HistoryEntry {
   timestamp: string;
   toolName: string;
   input: unknown;
-  risk: "low" | "high";
+  risk: "low" | "medium" | "high";
   decision: "auto-allow" | "confirmed" | "denied";
 }
 
 export interface ToolUsage {
   toolName: string;
-  risk: "low" | "high";
+  risk: "low" | "medium" | "high";
 }
 
 export type AskResult = { ok: true; text: string; tools: ToolUsage[] } | { ok: false; error: string };
@@ -59,7 +59,7 @@ export interface RepeatedFailure {
 
 export interface DashboardData {
   integrations: IntegrationStatus[];
-  riskCounts: { low: number; high: number };
+  riskCounts: { low: number; medium: number; high: number };
   categoryCounts: Array<{ server: string; count: number }>;
   hourlyActivity: Array<{ hourStart: string; count: number }>;
   /** Fase 7 parte 2: últimas falhas REAIS de execução (nunca decisões do Gateway). */
@@ -153,7 +153,7 @@ export function spawnSarahDaemon(tsxBinPath: string, daemonScriptPath: string, c
         resolve(
           (msg.data as DashboardData) ?? {
             integrations: [],
-            riskCounts: { low: 0, high: 0 },
+            riskCounts: { low: 0, medium: 0, high: 0 },
             categoryCounts: [],
             hourlyActivity: [],
           }
@@ -166,7 +166,13 @@ export function spawnSarahDaemon(tsxBinPath: string, daemonScriptPath: string, c
       const id = String(msg.id);
       const toolName = String(msg.toolName);
       const preview = (msg.preview as string | null) ?? null;
-      confirm(toolName, msg.input, preview).then((approved) => {
+      // Fase 7 parte 3: `risk` vem do filho (`daemon.ts`, que já sabe o
+      // que o Gateway decidiu) — "medium" por padrão se por algum
+      // motivo vier ausente/inesperado (nunca assume "high" sem
+      // necessidade, mas também nunca deixa `confirm` sem risco
+      // nenhum).
+      const risk: "medium" | "high" = msg.risk === "high" ? "high" : "medium";
+      confirm(toolName, msg.input, preview, risk).then((approved) => {
         sendToChild({ type: "confirm-response", id, approved });
       });
     }

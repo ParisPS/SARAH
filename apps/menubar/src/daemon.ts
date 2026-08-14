@@ -27,11 +27,13 @@ import type { ConfirmFn } from "@sarah/permissions";
  * usadas nesse turno, pro selo discreto que `apps/menubar` mostra sob
  * cada resposta (ver `SarahEvent` em @sarah/core). Quando o Gateway
  * (dentro de `createSarahSession`, aqui) precisa confirmar uma ação
- * de alto risco, ESTE processo não sabe mostrar um dialog nativo — só
- * o processo do Electron sabe — então manda
- * `{type:"confirm-request", id, toolName, input, preview}` pro pai e
- * ESPERA a resposta `{type:"confirm-response", id, approved}` antes
- * de deixar o Gateway continuar. `{type:"history", id, limit}` pede
+ * de risco médio ou alto, ESTE processo não sabe mostrar um dialog
+ * nativo — só o processo do Electron sabe — então manda
+ * `{type:"confirm-request", id, toolName, input, preview, risk}` (`risk`
+ * é `"medium"` ou `"high"`, Fase 7 parte 3 — o pai usa isso pra
+ * escolher a apresentação do dialog) pro pai e ESPERA a resposta
+ * `{type:"confirm-response", id, approved}` antes de deixar o Gateway
+ * continuar. `{type:"history", id, limit}` pede
  * as últimas decisões do audit log, respondido com
  * `{type:"history-result", id, entries}`. `{type:"dashboard", id}`
  * pede os dados REAIS do painel (Fase 4 parte 3.5: status de
@@ -51,11 +53,11 @@ function send(message: Record<string, unknown>): void {
 
 const pendingConfirms = new Map<string, (approved: boolean) => void>();
 
-const confirmViaParent: ConfirmFn = (toolName, input, preview) => {
+const confirmViaParent: ConfirmFn = (toolName, input, preview, risk) => {
   const id = randomUUID();
   return new Promise<boolean>((resolve) => {
     pendingConfirms.set(id, resolve);
-    send({ type: "confirm-request", id, toolName, input, preview });
+    send({ type: "confirm-request", id, toolName, input, preview, risk });
   });
 };
 

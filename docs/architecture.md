@@ -3099,9 +3099,22 @@ e "Próximo passo concreto" abaixo.
    detecta 3 falhas CONSECUTIVAS da mesma tool e alerta nos dois
    canais: banner visual no dashboard, e a SARAH mencionando
    proativamente no início da próxima resposta de conversa (uma vez
-   por sequência, não repete a cada turno). Peça 2 (rastreamento de
-   expiração de credencial) e nuance no risco médio continuam
-   pendentes.
+   por sequência, não repete a cada turno). **(Nuance no risco médio,
+   primeira tool)**: `run_command` (sandbox de código) virou risco
+   MÉDIO — confirma por padrão, roda direto só se o comando bater
+   numa allowlist explícita de leitura/build/teste (`ls`, `cat`, `pwd`,
+   `npm test`, `npm run build`, `npm run dev`, `git status`, `git log`,
+   `git diff`), avaliado do zero em CADA chamada, nunca por histórico.
+   `RiskLevel` em `@sarah/permissions`/`@sarah/audit` ganhou `"medium"`
+   (era só `"low"`/`"high"`) — donut do dashboard e badges do
+   histórico atualizados pros três níveis; `ConfirmFn` ganhou o
+   parâmetro `risk`, usado por `apps/cli`/`apps/menubar` pra uma
+   apresentação proporcional (menos alarmante que alto risco, mas
+   ainda pausando pra confirmar). git push/e-mail/forget de memória
+   continuam SEMPRE alto risco, sem allowlist nenhuma. Peça 2
+   (rastreamento de expiração de credencial) e as OUTRAS tools que
+   ainda merecem essa mesma nuance (fora do escopo desta primeira
+   passada, de propósito) continuam pendentes.
 8. Novas integrações e expansões.
 
 ## Próximo passo concreto
@@ -4648,3 +4661,127 @@ sempre sobre dado que muda entre chamadas.
 **Fase 7, parte 2, peça 3 (alertas proativos) está completa.** Peça 2
 (rastreamento de expiração de credencial — token do Gmail de 7 dias,
 PAT do GitHub) fica como próximo passo separado, ainda não iniciado.
+
+## Decisões e bugs encontrados na Fase 7, parte 3 (nuance no risco médio — primeira tool: `run_command`)
+
+Decisão TOMADA, não proposta (ver pedido original): risco médio nunca
+depende de histórico/confiança acumulada, avaliado do zero em CADA
+chamada. `run_command` (sandbox de código, Fase 5 parte 1) sai de
+baixo risco e vira a primeira tool médio-risco do projeto.
+
+### Por que classificação por conteúdo + allowlist explícita, e não outras formas
+
+Três formas óbvias de "risco médio" foram descartadas antes de
+escolher a implementada, com o motivo de cada descarte:
+
+- **B) Confiança acumulada** ("depois de N chamadas boas, passa a
+  confiar mais nesta tool/sessão"): é EXATAMENTE o padrão que o pedido
+  original citou como problema — "o exemplo do `rm` escondido atrás
+  de histórico bom". Um agente que rodou `git status`/`npm test` 50
+  vezes sem incidente não fica mais seguro pra rodar `rm -rf .` na
+  chamada 51 — as duas ações não têm relação nenhuma de risco entre
+  si, só aconteceram na mesma sessão. Confiança acumulada mediria a
+  sessão, não o comando — descartada.
+- **C) Confirmação sempre, sem allowlist nenhuma** (todo `run_command`
+  confirma, ponto final): resolveria a segurança, mas ignoraria a
+  parte do pedido que pede fricção PROPORCIONAL — ficaria
+  indistinguível de alto risco na prática (interrompe o fluxo do
+  mesmo jeito pra um `git status` inofensivo e pra um `rm -rf .`
+  real), o oposto de "nuance".
+- **A) Classificação determinística por CONTEÚDO, com allowlist —
+  escolhida.** Nem confia em nada acumulado, nem trata tudo igual: um
+  comando específico é seguro ou não é, sempre pela mesma regra,
+  reavaliada do zero a cada chamada — determinístico, auditável (dá
+  pra explicar exatamente POR QUE uma chamada rodou direto e outra
+  não), e sem abrir brecha nenhuma pro cenário do `rm` escondido.
+
+### A allowlist sozinha não bastava — defesa contra encadeamento de shell
+
+Confirmar só o COMEÇO do comando (`ls`, `git log`, etc.) sem mais nada
+teria uma brecha óbvia: `ls; rm -rf .` começa com `ls`, casaria com a
+allowlist, e rodaria o `rm` sem confirmação nenhuma — o EXATO cenário
+"rm escondido atrás de histórico bom" do pedido, só que escondido
+atrás de PREFIXO em vez de histórico. `SHELL_CHAINING_PATTERN`
+(`packages/permissions/src/index.ts`) bloqueia isso: qualquer
+metacaractere que permite encadear/redirecionar (`;`, `&&`, `||`,
+`|`, backtick, `$(...)`, `>`, `>>`, `<`, quebra de linha) tira o
+comando da allowlist INTEIRA, mesmo que o resto pareça inofensivo —
+não tenta "entender" o resto do comando, só recusa com segurança e
+cai pra risco médio normal (confirma). Consequência aceita de
+propósito: `npm install && npm run build` (exemplo que estava na
+description ORIGINAL da tool, antes desta fase) deixa de rodar
+direto — encadear dois comandos, mesmo os dois sendo individualmente
+inofensivos, precisa de confirmação agora. A description da tool foi
+atualizada pra orientar o agente a preferir comandos simples da
+allowlist em vez de encadear.
+
+### `RiskLevel` ganha um terceiro nível — mudança de tipo propagada por 12 arquivos
+
+`"low" | "high"` virou `"low" | "medium" | "high"` em
+`@sarah/permissions`/`@sarah/audit`. Nada no princípio central mudou
+(NENHUMA tool decide seu próprio risco — a checagem de conteúdo do
+comando mora em `packages/permissions`, não em `packages/sandbox`),
+mas o tipo se propaga por onde risco é exibido: `classifyRisk` passou
+a receber `input` além de `toolName` (precisa do `command` pra
+decidir); `ConfirmFn` ganhou um 4º parâmetro `risk: "medium" | "high"`
+(nunca `"low"`, que nunca chega a chamar `confirm`); `AuditLog.riskCounts()`
+devolve `{low, medium, high}`; donut do dashboard (`dashboard.js`)
+generalizado de "2 arcos fixos" pra "N arcos numa lista", em vez de
+duplicar a lógica quando um nível novo aparecer nesta ou numa fase
+futura; badges do histórico (`history.js`/`.html`) ganharam a cor
+âmbar intermediária entre o verde de baixo e o laranja de alto.
+
+### Apresentação proporcional — sem inventar infraestrutura de áudio nova
+
+`apps/cli`: cabeçalho troca de "⚠️ Ação de ALTO RISCO solicitada" pra
+"🟡 Confirmar ação" quando `risk === "medium"` — a PERGUNTA continua
+idêntica (sempre pausa, sempre espera "s/n"), só o tom muda.
+`apps/menubar`: o dialog nativo do Electron (`dialog.showMessageBox`)
+troca `type: "warning"` (alto risco, ícone de alerta laranja — que
+TAMBÉM dispara o som de alerta do sistema no macOS, de graça, sem
+nenhuma dependência de áudio nova) por `type: "info"` (risco médio,
+ícone neutro, sem o som de alerta) — mesmo modal real, pausando o
+fluxo, só menos alarmante. O protocolo JSON Lines entre o processo
+filho (`daemon.ts`) e o pai Electron (`sarah-daemon.ts`) precisou
+carregar o `risk` decidido pelo Gateway através da fronteira de
+processo (`confirm-request` ganhou o campo `risk`) — sem isso o lado
+Electron não teria como saber qual apresentação escolher.
+
+### Validação — de ponta a ponta, pelo caminho de produção real
+
+1. **Testes isolados da lógica de classificação** (16 casos, sem
+   passar pelo agente): os 9 comandos da allowlist (incluindo com
+   argumentos extras, ex. `git log --oneline -5`, `cat package.json`)
+   → `risk=medium`, `decision=auto-allow`; 6 comandos fora da
+   allowlist OU com encadeamento (`ls; rm -rf .`,
+   `npm install && npm run build`, `rm -rf .`,
+   `cat file.txt > output.txt`, `git log | grep foo`, `npm install`)
+   → `risk=medium`, `decision=confirmed`; `git_push`/`memory.forget`/
+   `gmail.send_draft` continuam `high` sem allowlist nenhuma;
+   `write_file`/`list_recent_emails` continuam `low`. Todos os 16
+   casos passaram.
+2. **Caminho de produção real** (`daemon.ts` spawnado como o Electron
+   faz, não `createSarahSession()` isolado — mesma metodologia das
+   correções anteriores desta fase), contra um projeto REAL já
+   existente (`lima-teste`, com `.git` de verdade): pedido pra rodar
+   `git status` → **zero** `confirm-request`, resposta chegou direto
+   com o resultado real do `git status` (o próprio agente explicou:
+   "está na allowlist de comandos simples, então roda direto sem
+   confirmação"). Pedido pra criar um arquivo descartável e depois
+   `rm` nele → UM `confirm-request` chegou, com `risk: "medium"` no
+   payload (confirmado direto no protocolo, não só na resposta em
+   texto) — aprovado, o `rm` rodou.
+3. **Audit log, conferido direto no banco**: as duas chamadas de
+   `run_command` desta validação aparecem com `risk = 'medium'`
+   (nunca mais só low/high) — a do `git status` com
+   `decision = 'auto-allow'`, a do `rm` com `decision = 'confirmed'`,
+   exatamente como pedido. Uma linha antiga (antes desta fase)
+   continua com `risk = 'low'`, preservada sem reescrita — histórico
+   não é retroativamente reclassificado.
+
+**Fase 7, parte 3 (nuance no risco médio — primeira tool) está
+completa.** Deliberadamente NÃO estende a mesma nuance pras outras
+tools de baixo risco do sandbox (`write_file`, `git_commit`, etc.) —
+pedido explícito era "primeira tool, não todas de uma vez"; uma
+eventual segunda passada fica pra decisão futura, tool por tool, com
+o mesmo cuidado.

@@ -442,7 +442,7 @@ export interface RepeatedFailure {
 
 export interface DashboardData {
   integrations: IntegrationStatus[];
-  riskCounts: { low: number; high: number };
+  riskCounts: { low: number; medium: number; high: number };
   categoryCounts: Array<{ server: string; count: number }>;
   hourlyActivity: Array<{ hourStart: string; count: number }>;
   recentErrors: RecentError[];
@@ -691,7 +691,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
             // Anthropic: `{ id, input, name, type: "tool_use" }`) — não
             // é preciso esperar o `onDecision` do Gateway pra saber
             // qual tool rodou, o mesmo stream de mensagens já diz.
-            yield { type: "tool", toolName: block.name, risk: classifyRisk(block.name) };
+            yield { type: "tool", toolName: block.name, risk: classifyRisk(block.name, block.input) };
           }
         }
       }

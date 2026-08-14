@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-export type RiskLevel = "low" | "high";
+export type RiskLevel = "low" | "medium" | "high";
 export type Decision = "auto-allow" | "confirmed" | "denied";
 /** Ver `recordResult` — `null` até o hook PostToolUse/PostToolUseFailure chegar (ou nunca, em linhas antigas). */
 export type CallStatus = "success" | "error";
@@ -196,17 +196,17 @@ export class AuditLog {
   }
 
   /**
-   * Contagem real de baixo vs alto risco — pro painel "proporção de
-   * risco" do dashboard (Fase 4 parte 3.5), substituindo qualquer
-   * "confiança"/indicador inventado por uma métrica que já existe de
-   * verdade no schema.
+   * Contagem real de baixo/médio/alto risco — pro painel "proporção de
+   * risco" do dashboard (Fase 4 parte 3.5; `medium` a partir da Fase 7
+   * parte 3), substituindo qualquer "confiança"/indicador inventado
+   * por uma métrica que já existe de verdade no schema.
    */
-  riskCounts(): { low: number; high: number } {
+  riskCounts(): { low: number; medium: number; high: number } {
     const rows = this.db.prepare(`SELECT risk, COUNT(*) as n FROM tool_calls GROUP BY risk`).all() as Array<{
       risk: RiskLevel;
       n: number;
     }>;
-    const counts = { low: 0, high: 0 };
+    const counts = { low: 0, medium: 0, high: 0 };
     for (const row of rows) counts[row.risk] = row.n;
     return counts;
   }

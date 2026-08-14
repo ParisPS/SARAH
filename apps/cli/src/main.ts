@@ -37,10 +37,20 @@ const { createSarahSession } = await import("@sarah/core");
  * ver `apps/menubar`). Comportamento idêntico ao de antes da
  * refatoração: mesmo texto do cabeçalho de risco, mesmo fallback pro
  * JSON cru quando não há `preview`.
+ *
+ * Fase 7 parte 3: `risk` distingue a apresentação — alto risco mantém
+ * o cabeçalho dramático de sempre ("⚠️ ALTO RISCO"); médio risco pausa
+ * e pergunta do mesmo jeito (nunca roda sem confirmar), mas com um
+ * cabeçalho mais neutro, sem a palavra "risco" gritando — proporcional
+ * ao que está em jogo, não ausência de fricção.
  */
-const confirmViaTerminal: ConfirmFn = async (toolName, toolInput, preview) => {
+const confirmViaTerminal: ConfirmFn = async (toolName, toolInput, preview, risk) => {
   const rl = readline.createInterface({ input, output });
-  console.log(`\n⚠️  Ação de ALTO RISCO solicitada: ${toolName}`);
+  if (risk === "high") {
+    console.log(`\n⚠️  Ação de ALTO RISCO solicitada: ${toolName}`);
+  } else {
+    console.log(`\n🟡 Confirmar ação: ${toolName}`);
+  }
   console.log(preview ?? `   Entrada: ${JSON.stringify(toolInput)}`);
   const answer = await rl.question("   Confirmar execução? (s/n) ");
   rl.close();

@@ -36,22 +36,25 @@ function renderIntegrations(container, integrations) {
 
 /**
  * Donut de verdade (Fase 4 parte 2, etapa 2, ajuste 2 — antes era uma
- * barra horizontal) — dois arcos via `stroke-dasharray` em duas
- * `<circle>` concêntricas, sem biblioteca de gráfico nova. Cada arco é
- * ENCURTADO por `gap` unidades (raio do círculo em unidades de
- * viewBox, não pixels) pra abrir um respiro visível entre os dois
- * segmentos — só quando os dois existem de verdade (100%/0% não tem
- * gap nenhum, senão o círculo inteiro ficaria com uma mordida sem
- * sentido). `stroke-linecap: round` (CSS) arredonda as pontas de cada
+ * barra horizontal) — um arco por `stroke-dasharray` em `<circle>`s
+ * concêntricas, sem biblioteca de gráfico nova. Fase 7 parte 3: passou
+ * de 2 pra até 3 segmentos (baixo/médio/alto) — recebe uma lista de
+ * `{pct, color}` em vez de dois números fixos, pra não precisar
+ * duplicar a lógica quando um nível novo aparecer de novo no futuro.
+ * Cada arco é ENCURTADO por `gap` unidades (raio do círculo em
+ * unidades de viewBox, não pixels) pra abrir um respiro visível entre
+ * segmentos — só entre os que existem de verdade (>0%), senão o
+ * círculo inteiro ficaria com mordidas sem sentido em segmentos
+ * ausentes. `stroke-linecap: round` (CSS) arredonda as pontas de cada
  * arco, mesmo efeito do mockup de referência.
  */
-function buildRiskDonut(lowPct, highPct) {
+function buildRiskDonut(segments) {
   const size = 100;
   const r = 40;
   const strokeWidth = 11;
   const circumference = 2 * Math.PI * r;
-  const hasBothSegments = lowPct > 0 && highPct > 0;
-  const gap = hasBothSegments ? 5 : 0;
+  const present = segments.filter((s) => s.pct > 0);
+  const gap = present.length > 1 ? 5 : 0;
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("id", "risk-donut");
@@ -79,24 +82,35 @@ function buildRiskDonut(lowPct, highPct) {
     return circle;
   }
 
-  if (lowPct > 0) group.appendChild(segment(lowPct, 0, "var(--accent-bright)"));
-  if (highPct > 0) group.appendChild(segment(highPct, (lowPct / 100) * circumference, "var(--risk-high)"));
+  let offset = 0;
+  for (const s of present) {
+    group.appendChild(segment(s.pct, offset, s.color));
+    offset += (s.pct / 100) * circumference;
+  }
   svg.appendChild(group);
   return svg;
 }
 
 function renderRisk(container, riskCounts) {
   container.innerHTML = "";
-  const total = riskCounts.low + riskCounts.high;
+  const medium = riskCounts.medium ?? 0;
+  const total = riskCounts.low + medium + riskCounts.high;
   if (total === 0) {
     container.appendChild(el("div", "empty-panel", "nenhuma ação registrada ainda"));
     return;
   }
   const lowPct = (riskCounts.low / total) * 100;
-  const highPct = 100 - lowPct;
+  const mediumPct = (medium / total) * 100;
+  const highPct = (riskCounts.high / total) * 100;
 
   const wrap = el("div", "risk-donut-wrap");
-  wrap.appendChild(buildRiskDonut(lowPct, highPct));
+  wrap.appendChild(
+    buildRiskDonut([
+      { pct: lowPct, color: "var(--accent-bright)" },
+      { pct: mediumPct, color: "var(--risk-medium)" },
+      { pct: highPct, color: "var(--risk-high)" },
+    ])
+  );
 
   const center = el("div", "risk-donut-center");
   center.appendChild(el("div", "risk-donut-pct", `${Math.round(lowPct)}%`));
@@ -106,9 +120,11 @@ function renderRisk(container, riskCounts) {
   const legend = el("div", "risk-legend");
   const lowLabel = el("span");
   lowLabel.innerHTML = `<span class="swatch low"></span>baixo · ${riskCounts.low}`;
+  const mediumLabel = el("span");
+  mediumLabel.innerHTML = `<span class="swatch medium"></span>médio · ${medium}`;
   const highLabel = el("span");
   highLabel.innerHTML = `<span class="swatch high"></span>alto · ${riskCounts.high}`;
-  legend.append(lowLabel, highLabel);
+  legend.append(lowLabel, mediumLabel, highLabel);
 
   container.append(wrap, legend);
 }

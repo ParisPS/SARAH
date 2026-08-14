@@ -186,12 +186,20 @@ function buildTrayIcon() {
  * JSON cru do input, quando não há `formatConfirmationInput` pra essa
  * tool). Botões: "Cancelar" (padrão/cancelId, pra Esc/Enter acidental
  * nunca confirmar sozinho) e "Confirmar".
+ *
+ * Fase 7 parte 3: `risk` escolhe o `type` do dialog nativo — `"warning"`
+ * (ícone de alerta amarelo/laranja do macOS, que TAMBÉM dispara o som
+ * de alerta do sistema) continua reservado pro alto risco de sempre;
+ * risco médio usa `"info"` (ícone neutro, sem o som de alerta) — ainda
+ * um modal de verdade que pausa o fluxo esperando decisão, só que sem
+ * a apresentação alarmante. Nenhuma dependência de áudio nova: é o
+ * próprio NSAlert do macOS que já associa som a cada `type`.
  */
-const confirmViaDialog: ConfirmFn = async (toolName, toolInput, preview) => {
+const confirmViaDialog: ConfirmFn = async (toolName, toolInput, preview, risk) => {
   const detail = preview ?? `Entrada: ${JSON.stringify(toolInput)}`;
   const result = await dialog.showMessageBox({
-    type: "warning",
-    message: `Ação de ALTO RISCO solicitada: ${toolName}`,
+    type: risk === "high" ? "warning" : "info",
+    message: risk === "high" ? `Ação de ALTO RISCO solicitada: ${toolName}` : `Confirmar ação: ${toolName}`,
     detail,
     buttons: ["Cancelar", "Confirmar"],
     defaultId: 0,
