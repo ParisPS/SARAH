@@ -363,6 +363,15 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".."
 const AUDIT_DB_PATH = join(REPO_ROOT, "data", "sarah.db");
 const MEMORY_DB_PATH = join(REPO_ROOT, "data", "sarah-memory.db");
 
+/**
+ * Fase 7 parte 2, peça 3: quantas falhas CONSECUTIVAS da MESMA tool
+ * (só chamadas com `status` observado, ver `AuditLog.repeatedFailures`)
+ * contam como "falha repetida" — 3 falhas isoladas ao longo de dias
+ * não é o mesmo problema que 3 seguidas agora; o critério é sempre
+ * "seguidas", nunca "acumuladas".
+ */
+const REPEATED_FAILURE_THRESHOLD = 3;
+
 export interface CreateSarahSessionOptions {
   /** Ver `ConfirmFn` em @sarah/permissions — quem chama decide a interface (terminal, dialog...). */
   confirm: ConfirmFn;
@@ -418,12 +427,26 @@ export interface RecentError {
   errorMessage: string;
 }
 
+/**
+ * Fase 7 parte 2, peça 3 (alertas proativos): uma tool cujas últimas
+ * `count` chamadas OBSERVADAS foram TODAS erro — não uma falha
+ * isolada. `count` é sempre o limiar usado (`REPEATED_FAILURE_THRESHOLD`),
+ * não o total histórico de falhas daquela tool.
+ */
+export interface RepeatedFailure {
+  toolName: string;
+  count: number;
+  lastError: string;
+  lastTimestamp: string;
+}
+
 export interface DashboardData {
   integrations: IntegrationStatus[];
   riskCounts: { low: number; high: number };
   categoryCounts: Array<{ server: string; count: number }>;
   hourlyActivity: Array<{ hourStart: string; count: number }>;
   recentErrors: RecentError[];
+  repeatedFailures: RepeatedFailure[];
 }
 
 export interface SarahSession {
@@ -564,6 +587,19 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
   // memória de sessão não é memória persistente.
   let sessionId: string | undefined;
 
+  /**
+   * Fase 7 parte 2, peça 3 (alertas proativos): tools já mencionadas
+   * proativamente nesta sessão por causa de falha repetida — evita
+   * repetir o mesmo aviso em TODO turno seguinte enquanto a tool
+   * continuar quebrada (o usuário já foi avisado uma vez, não precisa
+   * ouvir de novo a cada pergunta). Uma tool sai daqui sozinha assim
+   * que ela deixa de aparecer em `repeatedFailures()` (voltou a
+   * funcionar, ver lógica abaixo) — se quebrar nesta sessão, alerta de
+   * novo, como uma sequência NOVA. Reseta com a sessão (memória de
+   * sessão, não persistente — mesmo espírito de `sessionId`).
+   */
+  const alertedRepeatedFailures = new Set<string>();
+
   async function* ask(prompt: string, outputLanguage?: OutputLanguage): AsyncGenerator<SarahEvent, void, unknown> {
     // Sem cache: busca fresca antes de cada pergunta, mesma lição já
     // registrada no docs/architecture.md sobre o bug de cache do
@@ -576,6 +612,29 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           preferences.map((p) => `- ${p.content}`).join("\n")
         : undefined;
     const outputLanguageText = buildOutputLanguageText(outputLanguage);
+
+    // Fase 7 parte 2, peça 3: recalcula a CADA pergunta (mesma lição
+    // "sem cache" de sempre) — uma tool que já foi avisada, mas cuja
+    // sequência de erro terminou (não aparece mais em
+    // `repeatedFailures()`), sai do "já avisado" pra poder alertar de
+    // novo numa eventual sequência FUTURA, distinta desta.
+    const currentRepeatedFailures = audit.repeatedFailures(REPEATED_FAILURE_THRESHOLD);
+    const currentlyFailingNames = new Set(currentRepeatedFailures.map((f) => f.toolName));
+    for (const name of alertedRepeatedFailures) {
+      if (!currentlyFailingNames.has(name)) alertedRepeatedFailures.delete(name);
+    }
+    const newRepeatedFailures = currentRepeatedFailures.filter((f) => !alertedRepeatedFailures.has(f.toolName));
+    for (const f of newRepeatedFailures) alertedRepeatedFailures.add(f.toolName);
+    const repeatedFailureText =
+      newRepeatedFailures.length > 0
+        ? "ALERTA — falha repetida detectada (avise o usuário disso de forma direta e breve NO INÍCIO da sua " +
+          "próxima resposta, antes de tratar o pedido atual, mesmo que ele não tenha perguntado sobre isso): " +
+          newRepeatedFailures
+            .map((f) => `${f.toolName} falhou nas últimas ${f.count} chamadas seguidas (erro mais recente: "${f.lastError}")`)
+            .join("; ") +
+          "."
+        : undefined;
+
     // BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, MEMORY_CONFLICT_POLICY_TEXT
     // e outputLanguageText (quando presente) entram SEMPRE (não
     // dependem de haver preferência guardada) — são regra de
@@ -586,6 +645,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
       MEMORY_CONFLICT_POLICY_TEXT,
       outputLanguageText,
       preferencesText,
+      repeatedFailureText,
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -676,12 +736,15 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
       errorMessage: row.errorMessage ?? "",
     }));
 
+    const repeatedFailures: RepeatedFailure[] = audit.repeatedFailures(REPEATED_FAILURE_THRESHOLD);
+
     return {
       integrations,
       riskCounts: audit.riskCounts(),
       categoryCounts: audit.countByServer(),
       hourlyActivity: audit.hourlyBuckets(24),
       recentErrors,
+      repeatedFailures,
     };
   }
 

@@ -161,6 +161,41 @@ export class AuditLog {
   }
 
   /**
+   * Tools cujas últimas `threshold` chamadas OBSERVADAS (`status`
+   * conhecido — ignora linhas antigas/nunca capturadas, `status IS
+   * NULL`) foram TODAS erro — sinal de falha REPETIDA, não uma falha
+   * isolada (Fase 7 parte 2, peça 3: alertas proativos). Olha tool a
+   * tool, não globalmente: uma sequência de erros de tools DIFERENTES
+   * intercaladas nunca conta pra nenhuma delas — 3 falhas seguidas de
+   * `sarah-figma` misturadas com sucessos de `sarah-gmail` no meio não
+   * disparam nada pro Gmail. Dataset pequeno (uso pessoal, não
+   * empresarial) — agregação simples em JS por tool, sem SQL exótico,
+   * mesmo estilo de `riskCounts`/`countByServer` já usados aqui.
+   */
+  repeatedFailures(threshold = 3): Array<{ toolName: string; count: number; lastError: string; lastTimestamp: string }> {
+    const toolNames = (
+      this.db.prepare(`SELECT DISTINCT tool_name FROM tool_calls WHERE status IS NOT NULL`).all() as Array<{ tool_name: string }>
+    ).map((r) => r.tool_name);
+
+    const results: Array<{ toolName: string; count: number; lastError: string; lastTimestamp: string }> = [];
+    for (const toolName of toolNames) {
+      const rows = this.db
+        .prepare(`SELECT status, error_message, timestamp FROM tool_calls WHERE tool_name = ? AND status IS NOT NULL ORDER BY id DESC LIMIT ?`)
+        .all(toolName, threshold) as Array<{ status: CallStatus; error_message: string | null; timestamp: string }>;
+      if (rows.length < threshold) continue;
+      if (rows.every((r) => r.status === "error")) {
+        results.push({
+          toolName,
+          count: rows.length,
+          lastError: rows[0].error_message ?? "",
+          lastTimestamp: rows[0].timestamp,
+        });
+      }
+    }
+    return results;
+  }
+
+  /**
    * Contagem real de baixo vs alto risco — pro painel "proporção de
    * risco" do dashboard (Fase 4 parte 3.5), substituindo qualquer
    * "confiança"/indicador inventado por uma métrica que já existe de

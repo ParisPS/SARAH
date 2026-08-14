@@ -185,11 +185,39 @@ function renderActivity(container, hourlyActivity) {
  * PostToolUse/PostToolUseFailure — ver @sarah/core). Vazio é o estado
  * normal/esperado (a maioria das chamadas funciona), não um "sem dado
  * disponível" — mensagem própria pra deixar isso claro.
+ *
+ * Fase 7 parte 2, peça 3 (alertas proativos): `repeatedFailures` (uma
+ * tool cujas últimas N chamadas foram TODAS erro — ver
+ * `AuditLog.repeatedFailures`) ganha um banner de alerta ACIMA da
+ * lista normal de erros, mais chamativo que uma linha comum — é
+ * exatamente o sinal que não deve passar despercebido só porque o
+ * usuário não abriu o painel a tempo de ver cada erro isolado. Este
+ * painel já é reconstruído a cada resposta da SARAH (`refreshDashboard`,
+ * chamado depois de cada turno) — é o canal visual mais "proativo"
+ * possível numa UI pull-based, sem inventar notificação nova do zero.
  */
-function renderErrors(container, recentErrors) {
+function renderErrors(container, recentErrors, repeatedFailures) {
   container.innerHTML = "";
+
+  if (repeatedFailures && repeatedFailures.length > 0) {
+    for (const failure of repeatedFailures) {
+      const alert = el("div", "repeated-failure-alert");
+      alert.appendChild(el("span", "dot"));
+      const content = el("div", "content");
+      content.appendChild(
+        el("div", "tool", `${failure.count}× seguidas — ${failure.toolName.replace(/^mcp__/, "").replace(/__/g, " · ")}`)
+      );
+      content.appendChild(el("div", "message", failure.lastError));
+      alert.appendChild(content);
+      alert.title = `${new Date(failure.lastTimestamp).toLocaleString("pt-BR")} — ${failure.lastError}`;
+      container.appendChild(alert);
+    }
+  }
+
   if (!recentErrors || recentErrors.length === 0) {
-    container.appendChild(el("div", "empty-panel", "nenhum erro registrado"));
+    if (!repeatedFailures || repeatedFailures.length === 0) {
+      container.appendChild(el("div", "empty-panel", "nenhum erro registrado"));
+    }
     return;
   }
   for (const err of recentErrors) {
@@ -216,5 +244,5 @@ export async function refreshDashboard() {
   renderRisk(document.querySelector("#panel-risk .body"), data.riskCounts);
   renderCategories(document.querySelector("#panel-categories .body"), data.categoryCounts);
   renderActivity(document.querySelector("#panel-activity .body"), data.hourlyActivity);
-  renderErrors(document.querySelector("#panel-errors .body"), data.recentErrors);
+  renderErrors(document.querySelector("#panel-errors .body"), data.recentErrors, data.repeatedFailures);
 }

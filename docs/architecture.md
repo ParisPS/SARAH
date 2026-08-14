@@ -3090,13 +3090,18 @@ e "Próximo passo concreto" abaixo.
    silenciosamente uma contradição — resolvendo as duas notas
    pendentes da Fase 2, sem abrir mão da garantia "preferência vale
    sempre" (nenhum filtro de relevância na injeção do systemPrompt,
-   só um teto consultivo de aviso). **(Fase 7 parte 2, primeira peça,
-   completa)**: `tool_calls` (`@sarah/audit`) ganhou `status`/
+   só um teto consultivo de aviso). **(Fase 7 parte 2, peças 1 e 3
+   completas)**: `tool_calls` (`@sarah/audit`) ganhou `status`/
    `error_message`, preenchidos pelos hooks `PostToolUse`/
    `PostToolUseFailure` do Agent SDK depois que a tool roda de
    verdade — não só a decisão do Gateway antes de rodar. Painel
-   "Erros recentes" novo no dashboard. Nuance no risco médio e o
-   resto de observabilidade continuam pendentes.
+   "Erros recentes" novo no dashboard. `AuditLog.repeatedFailures()`
+   detecta 3 falhas CONSECUTIVAS da mesma tool e alerta nos dois
+   canais: banner visual no dashboard, e a SARAH mencionando
+   proativamente no início da próxima resposta de conversa (uma vez
+   por sequência, não repete a cada turno). Peça 2 (rastreamento de
+   expiração de credencial) e nuance no risco médio continuam
+   pendentes.
 8. Novas integrações e expansões.
 
 ## Próximo passo concreto
@@ -4567,3 +4572,79 @@ mesma investigação: sempre que uma correção mexer em `packages/core`/
 vale pra sessões do `apps/menubar` abertas DEPOIS do commit — reiniciar
 o app (ou usar `apps/cli`, que sobe um processo novo a cada `pnpm dev`)
 é necessário pra observar a mudança de verdade.
+
+## Decisões e bugs encontrados na Fase 7, parte 2, peça 3 (alertas proativos de falha repetida)
+
+Objetivo: usar o `status`/`error_message` que a peça 1 já captura pra
+detectar falhas REPETIDAS da mesma tool e tornar isso visível sozinho
+— não só "dá pra ver se abrir o painel".
+
+### Proposta aprovada antes de implementar
+
+Limiar: 3 falhas CONSECUTIVAS da mesma tool, contando só chamadas com
+`status` observado (linhas antigas com `status IS NULL` não contam pra
+nenhum lado — nem sucesso nem erro). "Consecutivas" é sempre por TOOL,
+não global: uma sequência de erros de tools diferentes intercaladas
+não conta pra nenhuma delas. Dois canais, não um só: (1) dashboard —
+banner visual no painel "Erros recentes", que já se reconstrói sozinho
+depois de cada resposta da SARAH (`refreshDashboard`), o mais
+"proativo" que dá pra ser numa UI pull-based sem inventar infra de
+notificação nova; (2) a SARAH menciona proativamente no INÍCIO da
+próxima resposta de conversa, via o mesmo padrão de injeção
+determinística no `systemPrompt` já usado pras preferências — só UMA
+VEZ por sequência nova (não a cada turno seguinte), controlado por um
+`Set` em memória por `SarahSession` (`alertedRepeatedFailures`), que
+recalcula a cada pergunta: uma tool sai do set assim que ela deixa de
+aparecer em `repeatedFailures()` (voltou a funcionar), podendo alertar
+de novo numa eventual sequência FUTURA.
+
+### `AuditLog.repeatedFailures()` — agregação simples em JS, não SQL exótico
+
+Dataset pequeno (uso pessoal, não empresarial), mesmo espírito de
+`riskCounts`/`countByServer` já existentes: busca os `tool_name`
+distintos com `status` observado, e pra cada um pega as últimas
+`threshold` linhas (`ORDER BY id DESC LIMIT ?`) — se TODAS forem
+`error`, é uma falha repetida. `packages/core` expõe isso em
+`DashboardData.repeatedFailures` (pro painel) e recalcula fresco a
+cada `ask()` (pro alerta de conversa) — sem cache, mesma lição de
+sempre sobre dado que muda entre chamadas.
+
+### Validação — de ponta a ponta, pelo caminho de produção real
+
+1. Uma chamada bem-sucedida ao Gmail (`list_recent_emails`), antes de
+   qualquer falha do Figma nesta sessão de teste — resposta normal,
+   sem menção nenhuma a erro.
+2. Três chamadas seguidas a `mcp__sarah-figma__export_assets` (mesmo
+   arquivo real da Fase 5, rate limit real ainda ativo) — todas
+   falharam com HTTP 429 de verdade, cada uma capturada com
+   `status='error'` (peça 1, já validada antes).
+3. `dashboard().repeatedFailures` passou a devolver exatamente
+   `mcp__sarah-figma__export_assets` com `count: 3` e a mensagem real
+   do último 429 — confirma o dado chegando até onde o painel novo
+   consome.
+4. **Achado real testando**: o alerta de conversa disparou na
+   PRIMEIRA chamada da sessão de teste (um pedido trivial ao Gmail),
+   não numa pergunta solta feita DEPOIS das três falhas novas —
+   porque já existiam falhas consecutivas suficientes no audit log de
+   testes anteriores desta mesma fase quando a sessão de teste
+   começou. Isso não é um bug: é exatamente o comportamento correto —
+   "3 falhas seguidas já registradas" dispara o alerta na PRIMEIRA
+   oportunidade daquela sessão, não espera um número arbitrário de
+   perguntas. A resposta real do agente confirmou o texto: começou com
+   "⚠️ Antes de tratar seu pedido: a ferramenta de exportar assets do
+   Figma (`export_assets`) falhou nas últimas 3 tentativas seguidas —
+   está batendo no rate limit do Figma (...)", ANTES de responder à
+   pergunta real sobre e-mails — exatamente o comportamento pedido.
+5. Turnos seguintes na MESMA sessão (incluindo depois das 3 tentativas
+   novas de Figma do próprio teste) não repetiram o aviso — confirma o
+   `Set` de "já alertado" funcionando, sem virar um aviso repetitivo a
+   cada pergunta.
+6. Confirmado direto no banco: `mcp__sarah-gmail__*` nunca acumulou 3
+   erros CONSEGUIDOS (só 1 erro isolado, cercado de sucessos, de um
+   teste anterior) — nunca apareceu em `repeatedFailures()`, mesmo
+   sendo chamado várias vezes ao longo da validação. Tool saudável não
+   dispara alerta à toa.
+
+**Fase 7, parte 2, peça 3 (alertas proativos) está completa.** Peça 2
+(rastreamento de expiração de credencial — token do Gmail de 7 dias,
+PAT do GitHub) fica como próximo passo separado, ainda não iniciado.

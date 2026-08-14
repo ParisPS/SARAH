@@ -49,6 +49,14 @@ export interface RecentError {
   errorMessage: string;
 }
 
+/** Mesma forma de `RepeatedFailure` (@sarah/core) — copiada pelo mesmo motivo acima. */
+export interface RepeatedFailure {
+  toolName: string;
+  count: number;
+  lastError: string;
+  lastTimestamp: string;
+}
+
 export interface DashboardData {
   integrations: IntegrationStatus[];
   riskCounts: { low: number; high: number };
@@ -56,6 +64,8 @@ export interface DashboardData {
   hourlyActivity: Array<{ hourStart: string; count: number }>;
   /** Fase 7 parte 2: últimas falhas REAIS de execução (nunca decisões do Gateway). */
   recentErrors: RecentError[];
+  /** Fase 7 parte 2, peça 3: tools com falha em N chamadas seguidas — alerta proativo. */
+  repeatedFailures: RepeatedFailure[];
 }
 
 export interface SarahDaemon {
