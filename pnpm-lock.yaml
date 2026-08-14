@@ -69,6 +69,15 @@ importers:
         specifier: ^3.23.0
         version: 3.25.76
 
+  packages/apple-contacts:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.3.200
+        version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
+
   packages/apple-notes:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
@@ -105,6 +114,9 @@ importers:
       '@sarah/apple-calendar':
         specifier: workspace:*
         version: link:../apple-calendar
+      '@sarah/apple-contacts':
+        specifier: workspace:*
+        version: link:../apple-contacts
       '@sarah/apple-notes':
         specifier: workspace:*
         version: link:../apple-notes
@@ -114,6 +126,9 @@ importers:
       '@sarah/audit':
         specifier: workspace:*
         version: link:../audit
+      '@sarah/facetime':
+        specifier: workspace:*
+        version: link:../facetime
       '@sarah/fixtures':
         specifier: workspace:*
         version: link:../fixtures
@@ -132,6 +147,15 @@ importers:
       '@sarah/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+
+  packages/facetime:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.3.200
+        version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
 
   packages/fixtures:
     dependencies:

@@ -3117,7 +3117,15 @@ e "Próximo passo concreto" abaixo.
    (rastreamento de expiração de credencial) e as OUTRAS tools que
    ainda merecem essa mesma nuance (fora do escopo desta primeira
    passada, de propósito) continuam pendentes.
-8. Novas integrações e expansões.
+8. **Fase 8 — FaceTime, completa**: `apple-contacts.find` (busca no
+   Contacts.app via JXA, baixo risco) resolve nome → telefone/e-mail
+   pra `facetime.call` (dispara chamada de VÍDEO via `facetime://`,
+   nunca `facetime-audio://`) — risco MÉDIO sem allowlist nenhuma
+   (toda chamada confirma, sempre; só a apresentação é mais leve que
+   alto risco, mesmo mecanismo da Fase 7 parte 3). Ver "## Fase 8 —
+   FaceTime" mais abaixo pro detalhe completo e a validação real (com
+   uma chamada de vídeo de verdade).
+9. Novas integrações e expansões.
 
 ## Próximo passo concreto
 
@@ -4922,3 +4930,127 @@ lacunas silenciosas):
   o plano Professional do Figma — rate limit do plano gratuito
   (~6 chamadas/mês) segue bloqueando uso repetido. Não decidido nesta
   fase, não escondido: registrado aqui e no README.
+
+## Fase 8 — FaceTime
+
+Objetivo em duas peças: `apple-contacts.find` (peça nova, necessária
+pra resolver nome → telefone/e-mail) e `facetime.call` (dispara a
+chamada de vídeo de verdade). Dois pacotes novos:
+`packages/apple-contacts` e `packages/facetime`.
+
+### `apple-contacts.find` — mesmo padrão externo do Notes, gate de permissão DIFERENTE do esperado
+
+Segue exatamente o padrão externo já usado por `apple-notes`/
+`apple-calendar`/`apple-reminders`: `tool()` + `createSdkMcpServer` em
+`src/index.ts`, ponte `osascript -l JavaScript` em `src/bridge.ts`,
+script JXA em `native/contacts-bridge.js`. Só busca (`find`) — sem
+criar/editar/apagar contato, nunca foi pedido e não tem necessidade
+óbvia pro caso de uso (ligar por FaceTime). Baixo risco: leitura pura.
+
+**Testado ANTES de decidir o mecanismo de status** (não assumido):
+`Contacts.app` tem DOIS caminhos de acesso via automação do macOS, com
+gates de permissão SEPARADOS — confirmado rodando os dois de verdade
+nesta máquina, no mesmo terminal, em sequência:
+
+```
+ObjC.import("Contacts");
+CNContactStore.authorizationStatusForEntityType(CNEntityTypeContacts)
+  → 0 (notDetermined)
+```
+```
+Application("Contacts").people()
+  → funcionou direto, 57 contatos reais devolvidos, sem pedir nada
+```
+
+Ou seja: `CNContactStore` (o framework que apps Swift/ObjC nativos
+usam) estava com autorização NUNCA solicitada nesta máquina, mas o
+scripting via `Application("Contacts")` (Apple Events/Automation — o
+MESMO mecanismo que `apple-notes` já usa) funcionou de primeira, porque
+a Automation pra Contacts.app já tinha sido autorizada em fases
+anteriores deste projeto (mesmo diálogo do sistema que Calendar/
+Reminders/Notes já dispararam). Consequência prática: `checkContactsStatus()`
+usa a MESMA estratégia do Notes (perguntar o nome do app via Apple
+Events, não `CNContactStore`) — checar a autorização errada teria
+reportado "não configurado" pro dashboard mesmo com a tool
+funcionando perfeitamente.
+
+**Quirk real encontrado testando contra contatos de verdade**: o
+`label()` de telefone/e-mail vem no formato interno do AddressBook —
+`_$!<Mobile>!$_`, não "Mobile" — confirmado no dado real:
+
+```json
+{"name": "Pedro H", "phones": [{"label": "_$!<Mobile>!$_", "value": "+5511954938151"}]}
+```
+
+`cleanLabel()` remove esse envelope (`_$!<(.+)>!\$_` → grupo capturado)
+antes de devolver pro agente — sem isso, cada resultado de busca
+chegaria com um rótulo ilegível. Números de telefone já vêm no formato
+E.164 (`+5511954938151`), sem normalização própria necessária.
+
+### `facetime.call` — `facetime://`, nunca `facetime-audio://`, sem dependência nova
+
+`packages/facetime/src/open-url.ts`: `spawn("open", [url])`, onde `url
+= "facetime://" + encodeURIComponent(target)`. Decisão explícita,
+comentada no código pra não se perder: o esquema de URL usado é
+SEMPRE `facetime://` (vídeo) — `facetime-audio://` (áudio) nunca
+aparece em lugar nenhum deste pacote, nem como opção. `open` é o
+utilitário nativo do macOS (sem dependência nova); o alvo vai como UM
+elemento de array pro `spawn`, nunca concatenado numa string de shell
+— sem risco de injeção de shell através do número/e-mail.
+
+Descrição da tool orienta o agente a chamar `apple-contacts.find`
+ANTES quando o usuário só der um nome, e a perguntar qual contato se a
+busca achar mais de um (comportamento real observado na validação
+abaixo — a busca por "Pedro" achou dois contatos, e o agente pediu
+desambiguação sozinho, sem precisar de instrução explícita adicional
+além da description da tool).
+
+### Risco: MÉDIO, mas SEM allowlist — diferença deliberada do `run_command` da Fase 7 parte 3
+
+`mcp__sarah-facetime__call` entra em `MEDIUM_RISK_TOOLS`
+(`@sarah/permissions`), mesmo mecanismo/tier da Fase 7 parte 3, mas
+`isAutoApprovedMediumRisk()` NÃO ganhou um caso pra ela — por padrão a
+função devolve `false` pra qualquer tool sem um caso específico, então
+TODA chamada de `facetime.call` confirma, sempre, sem exceção. Isso é
+intencional, não uma peça faltando: diferente de `run_command`, onde
+existe um subconjunto de comandos genuinamente seguros (leitura/build/
+teste, sem efeito nenhum fora do sandbox), não existe um "alvo seguro"
+equivalente pra uma chamada — CADA chamada, pra qualquer pessoa, tem o
+mesmo efeito real no mundo (o telefone dela toca). A única coisa que
+`facetime.call` herda da Fase 7 parte 3 é a APRESENTAÇÃO proporcional
+(`type: "info"` no dialog do Electron, cabeçalho sem "ALTO RISCO" no
+terminal) — nunca o "roda sem perguntar".
+
+### Validação — de ponta a ponta, incluindo uma decisão consciente de NÃO ligar sozinho pra um contato aleatório
+
+1. **`apple-contacts.find` pelo caminho de produção real** (`daemon.ts`
+   spawnado, mesmo protocolo de sempre): busca por "Pedro" achou DOIS
+   contatos reais (`Pedro H`, telefone `+5511954938151`; `Pedro`,
+   telefone `+5511952436675`), risco `low`/`auto-allow` no audit log,
+   e o agente pediu desambiguação ao usuário sozinho — comportamento
+   correto sem precisar de mais instrução que a description da tool.
+2. **Decisão consciente antes de testar `facetime.call`**: ligar de
+   verdade pra um contato real do usuário tem efeito real numa
+   TERCEIRA PESSOA (o telefone dela toca, sem contexto nenhum sobre um
+   teste) — diferente de qualquer outra validação real feita neste
+   projeto até aqui, que só afeta dados/contas do próprio usuário.
+   Peguei os dois "Pedro" achados no passo 1 e, EM VEZ de ligar pra um
+   deles por conta própria, perguntei ao usuário qual alvo usar — ele
+   forneceu um número diferente, escolhido por ele mesmo
+   (`+55 21 98090-9047`), especificamente pra este teste.
+3. **`facetime.call` pelo caminho de produção real**, com o número
+   fornecido pelo usuário: o Gateway pediu confirmação
+   (`confirm-request` com `risk: "medium"` visível no protocolo, igual
+   ao formato já validado na Fase 7 parte 3) ANTES de discar —
+   aprovada, a chamada foi disparada de verdade
+   (`open facetime://+5521980909047`). Audit log confirma:
+   `risk = 'medium'`, `decision = 'confirmed'`, `status = 'success'`.
+4. **Confirmação visual, pedida ao usuário — NUNCA por screenshot**
+   (ver a nova regra permanente no `CLAUDE.md`, Fase 7 parte 3): em vez
+   de tentar capturar a tela pra "ver" o resultado, perguntei
+   diretamente se o FaceTime abriu com uma tela de chamada de VÍDEO
+   (câmera/preview) pro número certo. Confirmado pelo usuário: sim,
+   vídeo de verdade, número certo — a regra nova já sendo seguida na
+   prática, não só registrada em texto.
+
+**Fase 8 (FaceTime) está completa.**

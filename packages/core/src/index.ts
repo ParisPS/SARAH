@@ -11,6 +11,8 @@ import { gmailServer, getDraftPreview, checkGmailStatus } from "@sarah/gmail";
 import { createMemoryServer } from "@sarah/memory";
 import { appleNotesServer, checkNotesStatus } from "@sarah/apple-notes";
 import { codeServer, graphicsServer, slidesServer, figmaServer, stopAllProjects } from "@sarah/sandbox";
+import { appleContactsServer, checkContactsStatus } from "@sarah/apple-contacts";
+import { facetimeServer } from "@sarah/facetime";
 
 /**
  * Núcleo do agente: monta o Gateway de permissões, o audit log, a
@@ -665,6 +667,8 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "sarah-graphics": graphicsServer,
           "sarah-slides": slidesServer,
           "sarah-figma": figmaServer,
+          "sarah-apple-contacts": appleContactsServer,
+          "sarah-facetime": facetimeServer,
         },
         disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
         canUseTool,
@@ -706,7 +710,12 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
    * `Promise.allSettled`, não `Promise.all`: uma integração com
    * problema (ex.: bridge JXA travando por algum motivo novo) não
    * pode derrubar o dashboard inteiro — vira `configured: false` com
-   * o erro como detalhe, as outras quatro continuam aparecendo.
+   * o erro como detalhe, as outras cinco continuam aparecendo.
+   * `sarah-facetime` não entra nesta lista de propósito — não tem
+   * "configuração" nenhuma pra checar (só `open` + o app FaceTime
+   * nativo, sem chave/permissão própria além do que o Contacts já
+   * cobre), então um indicador aqui seria decorativo, contra o próprio
+   * princípio deste painel.
    */
   async function dashboard(): Promise<DashboardData> {
     const checks: Array<{ id: string; label: string; run: () => Promise<{ configured: boolean; detail: string }> }> = [
@@ -715,6 +724,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
       { id: "sarah-notion", label: "Notion Calendar", run: checkNotionStatus },
       { id: "sarah-gmail", label: "Gmail", run: checkGmailStatus },
       { id: "sarah-apple-notes", label: "Apple Notes", run: checkNotesStatus },
+      { id: "sarah-apple-contacts", label: "Apple Contacts", run: checkContactsStatus },
     ];
     const settled = await Promise.allSettled(checks.map((c) => c.run()));
     const integrations: IntegrationStatus[] = settled.map((result, i) => {

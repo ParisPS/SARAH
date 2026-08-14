@@ -75,6 +75,12 @@ const LOW_RISK_TOOLS = new Set<string>([
   // nem sobrescreve nenhuma nota existente).
   "mcp__sarah-apple-notes__list_notes",
   "mcp__sarah-apple-notes__create_note",
+  // Apple Contacts (Fase 8, FaceTime): só BUSCA (find) existe — leitura
+  // pura, sem efeito colateral possível, mesma justificativa de
+  // list_events/list_reminders/list_notes. Ligar de verdade é a tool
+  // SEPARADA `facetime.call`, essa sim fora desta lista (ver
+  // MEDIUM_RISK_TOOLS abaixo).
+  "mcp__sarah-apple-contacts__find",
   // Sandbox de código (Fase 5, parte 1): a garantia de segurança destas
   // quatro tools vem do ISOLAMENTO DO CONTAINER em si — validado de
   // verdade (ver docs/architecture.md) que o container não enxerga o
@@ -181,6 +187,16 @@ const FORCE_HIGH_RISK = [/^mcp__claude_ai_Base44__/];
  */
 const MEDIUM_RISK_TOOLS = new Set<string>([
   "mcp__sarah-code__run_command",
+  // FaceTime (Fase 8): liga de verdade pra alguém — não é destrutivo/
+  // irreversível como git push ou enviar e-mail (não mereceria o
+  // alarme de alto risco), mas também não é zero-fricção como uma
+  // leitura (mereceria mais que baixo risco). DIFERENTE de
+  // `run_command`, esta tool NÃO tem entrada nenhuma em
+  // `isAutoApprovedMediumRisk` — não existe um "alvo seguro" que
+  // dispense confirmar, então toda chamada confirma, sempre, sem
+  // exceção (mesma garantia de alto risco nesse aspecto específico —
+  // só a APRESENTAÇÃO da confirmação é mais leve, ver `ConfirmFn`).
+  "mcp__sarah-facetime__call",
 ]);
 
 /**

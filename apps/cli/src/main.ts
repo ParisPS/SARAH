@@ -78,7 +78,8 @@ async function main(): Promise<void> {
       "o calendário principal), 'cria um evento no Apple Calendar amanhã às 15h', " +
       "'cria um lembrete pra ligar pro dentista', 'resuma meus e-mails de hoje', " +
       "'lembra que...' (guarda uma preferência ou fato), 'o que você sabe sobre mim?', " +
-      "'lista minhas notas', 'cria uma nota com...' ou 'envia o rascunho <id>' (pede confirmação)\n"
+      "'lista minhas notas', 'cria uma nota com...', 'envia o rascunho <id>' (pede confirmação), " +
+      "'busca o contato do Fulano' ou 'liga por vídeo pro Fulano' (FaceTime, pede confirmação leve)\n"
   );
 
   try {
