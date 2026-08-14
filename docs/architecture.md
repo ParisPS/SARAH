@@ -522,6 +522,12 @@ esclarecimento do próprio agente também para o fluxo esperando "s/n".
 
 ### Notas pendentes da Fase 2 (sem ação de código agora — só registro pro futuro)
 
+**As duas notas abaixo foram RESOLVIDAS na Fase 7, parte 1 (memória
+semântica) — mantidas aqui, sem editar o texto original, como registro
+histórico de como o problema foi enxergado na época; ver a seção
+"Decisões e bugs encontrados na Fase 7, parte 1" mais abaixo pra como
+cada uma foi resolvida de verdade.**
+
 1. **`listByCategory("preferencia")` não tem limite** — toda a tabela
    de preferências entra inteira no `systemPrompt` de cada `query()`.
    Sem custo perceptível hoje (poucas preferências, um assistente
@@ -3075,7 +3081,17 @@ e "Próximo passo concreto" abaixo.
    **Deploy de sites continua FORA do escopo**, decisão já tomada
    antes — usuário resolve manualmente, não retomado nesta fase.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
-   nuance no risco médio.
+   nuance no risco médio. **(Fase 7 parte 1 completa)**: `memory.recall`
+   funde busca por palavra-chave (FTS5) com busca por similaridade
+   semântica (`sqlite-vec` + embeddings da Voyage AI, `voyage-4-lite`)
+   via Reciprocal Rank Fusion; `memory.remember` detecta preferência/
+   fato semanticamente parecido ANTES de gravar e pergunta ao usuário
+   se é pra substituir ou manter as duas, em vez de empilhar
+   silenciosamente uma contradição — resolvendo as duas notas
+   pendentes da Fase 2, sem abrir mão da garantia "preferência vale
+   sempre" (nenhum filtro de relevância na injeção do systemPrompt,
+   só um teto consultivo de aviso). Observabilidade e nuance no risco
+   médio continuam pendentes, não fazem parte desta parte 1.
 8. Novas integrações e expansões.
 
 ## Próximo passo concreto
@@ -4035,3 +4051,212 @@ esfera.
 
 **Fase 4 (Voz) fica encerrada aqui, com as três correções aplicadas e
 validadas.**
+
+---
+
+## Decisões e bugs encontrados na Fase 7, parte 1 (memória semântica — embeddings)
+
+Objetivo: `memory.recall` encontra memórias por SIGNIFICADO, não só
+palavra-chave exata, e `memory.remember` detecta preferências/fatos
+parecidos já guardados antes de empilhar silenciosamente uma
+contradição — resolvendo, de propósito, as duas notas pendentes
+registradas na Fase 2 (ver seção acima), sem abrir mão das garantias
+que motivaram deixá-las pendentes na época.
+
+### Fornecedor confirmado na documentação atual: Voyage AI, `voyage-4-lite`
+
+Voyage AI é o parceiro que a própria Anthropic recomenda pra
+embeddings (Claude não gera embedding nativamente). Endpoint e modelo
+CONFERIDOS na documentação atual antes de escrever qualquer código, não
+assumidos de memória: `POST https://api.voyageai.com/v1/embeddings`,
+modelo `voyage-4-lite` (o mais barato da família `voyage-4` — 200M
+tokens grátis por conta, de sobra pro volume de um assistente pessoal
+de um usuário só; a qualidade maior de `voyage-4`/`voyage-4-large` não
+se justifica pra frases curtas de fato/preferência), dimensão padrão
+1024 (não sobrescrita, um parâmetro a menos pra errar). `input_type`
+diferenciado (`"document"` ao gravar, `"query"` ao buscar em
+`memory.recall`) segue a recomendação da própria Voyage pra melhorar
+retrieval assimétrico — já a checagem de conflito (`findSimilar`)
+compara memória-com-memória, o MESMO tipo de conteúdo dos dois lados,
+por isso usa `"document"` nos dois lados ali, não `"query"`.
+
+### Armazenamento: `sqlite-vec` confirmado viável, mas com ressalva real de maturidade
+
+Mantém o padrão já usado neste projeto (um SQLite por
+responsabilidade — `sarah.db`, `sarah-memory.db`) em vez de um banco
+vetorial separado. A documentação oficial confirma que o projeto está
+em **pré-v1** (`v0.1.10-alpha.4` no momento desta implementação,
+"expect breaking changes" nas palavras da própria doc) — registrado
+como decisão consciente de aceitar esse risco (projeto pessoal, baixo
+volume), não ignorado. A extensão é carregada com `try/catch`
+explícito (`sqliteVec.load(db)`); se falhar nesta máquina, um flag
+`vecAvailable = false` faz TODA a camada de busca semântica degradar
+silenciosamente pra "indisponível" — `memory.recall`/`memory.remember`
+continuam funcionando normalmente, só com palavra-chave (FTS5), nunca
+quebrando por causa de uma dependência experimental.
+
+**Achados reais testando a extensão isoladamente antes de integrar nas
+tools** (script descartável, não commitado):
+
+- `INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)` EXIGE que
+  `rowid` seja passado como `BigInt`, não `number` — um `number` comum
+  falha com `SqliteError: Only integers are allows for primary key
+  values on memories_vec` (erro de digitação da própria extensão,
+  "allows" no lugar de "allowed" — confirmado que não é erro de digitação
+  nosso).
+- Consulta KNN (`WHERE embedding MATCH ? ... LIMIT N`) funciona sozinha
+  contra a tabela virtual, mas **`k = N` e `LIMIT N` são mutuamente
+  exclusivos** ("Only LIMIT or 'k =?' can be provided, not both") — e
+  assim que a tabela virtual entra num JOIN com outra tabela (pra
+  filtrar por `category`, por exemplo), o SQLite exige `k = N`
+  explícito (não aceita mais `LIMIT` sozinho: "A LIMIT or 'k = ?'
+  constraint is required on vec0 knn queries"). Resolvido fazendo o
+  KNN numa SUBQUERY isolada (`SELECT rowid, distance FROM memories_vec
+  WHERE embedding MATCH ? AND k = ?`) e só then fazendo o JOIN/filtro
+  de categoria na query EXTERNA — padrão usado em `findSimilar` e
+  `recall` (`db.ts`).
+- A métrica padrão de distância é L2 (euclidiana), não cosseno — em
+  vez de depender de `distance_metric=cosine` na definição da coluna
+  (sintaxe que pode não existir/mudar entre versões alpha), os vetores
+  são NORMALIZADOS (norma 1) antes de gravar (`normalize()`,
+  `embeddings.ts`), e a distância L2 devolvida é convertida pra
+  similaridade de cosseno por uma fórmula direta válida só pra vetores
+  unitários: `‖a-b‖² = 2 - 2·cos(a,b) ⟹ cos(a,b) = 1 - ‖a-b‖²/2`
+  (`l2DistanceToCosineSimilarity`). Verificado batendo essa fórmula
+  contra um cosseno calculado na unha (produto escalar direto dos
+  vetores normalizados) com embeddings REAIS da Voyage — os dois deram
+  exatamente o mesmo número.
+
+### `memory.recall`: fusão por Reciprocal Rank Fusion (RRF)
+
+FTS5 (palavra-chave, BM25) e `sqlite-vec` (similaridade semântica)
+rodam em paralelo; cada resultado ganha `1 / (60 + posição)` na lista
+de origem (60 é a constante clássica da literatura de RRF, usada como
+está, sem inventar um peso novo pra calibrar), e um id que aparece nas
+DUAS listas soma as duas pontuações. Resolve um problema real de
+combinar ranks: o "rank" do FTS5 (BM25) e a "distância" do `sqlite-vec`
+vivem em escalas totalmente diferentes e incomparáveis — RRF ignora a
+escala original, só usa a POSIÇÃO de cada resultado dentro da própria
+lista, então nunca precisa de um fator de conversão arbitrário entre
+os dois.
+
+### Nota 1 da Fase 2 resolvida: teto CONSULTIVO, nunca filtro por relevância
+
+Rejeitada de propósito a solução óbvia — filtrar preferências
+injetadas por relevância semântica à mensagem atual quebraria a
+garantia "preferência vale SEMPRE", que foi exatamente o motivo de não
+resolver isso na Fase 2. `packages/core/src/index.ts` continua
+injetando TODAS as preferências, sem filtro nenhum
+(`memoryStore.listByCategory("preferencia")`, inalterado). Em vez
+disso: `PREFERENCE_SOFT_CAP = 40` (`packages/memory/src/index.ts`) —
+passar desse número nunca bloqueia nem filtra nada, só anexa um aviso
+no resultado de `memory.remember` (`warning` no JSON devolvido) pro
+agente repassar ao usuário sugerindo revisão/consolidação. Crescimento
+fica visível e acionável, sem perder o determinismo que motivou a nota
+original.
+
+### Nota 2 da Fase 2 resolvida: checagem de conflito ANTES de gravar, com decisão do usuário
+
+`memory.remember` busca por similaridade semântica contra memórias
+JÁ EXISTENTES da MESMA categoria (fato-com-fato, preferência-com-
+preferência) antes de gravar. Achar uma parecida acima de
+`CONFLICT_SIMILARITY_THRESHOLD` interrompe a gravação — a tool devolve
+`{conflict: true, existing: {...}, similarity}` em vez de salvar, e um
+novo bloco sempre injetado no `systemPrompt`
+(`MEMORY_CONFLICT_POLICY_TEXT`, `packages/core/src/index.ts` — mesmo
+mecanismo de sempre-presente já usado pra `BASE44_POLICY_TEXT`/
+`GIT_WORKFLOW_POLICY_TEXT`, reforçando o que a description da própria
+tool já diz, porque description influencia mas não é garantida)
+instrui o agente a perguntar ao usuário via `AskUserQuestion` antes de
+decidir — SUBSTITUIR (memory.forget na antiga, que já era alto risco
+desde a Fase 2, + `memory.remember` de novo com `force: true`) ou
+MANTER AS DUAS (`memory.remember` com `force: true` direto).
+`memory.remember` continua baixo risco sempre — só o `forget` de uma
+eventual substituição passa pela confirmação de alto risco de sempre,
+nada novo aí (mesmo padrão que o pedido original já antecipava).
+
+**Threshold calibrado com embeddings REAIS, não com intuição
+genérica**: a proposta inicial (0,84, baseada em expectativa comum
+sobre embeddings) foi TESTADA contra o par de exemplo do próprio
+pedido — "sempre crie lembretes na lista Trabalho" vs. "prefiro que
+lembretes vão pra lista Pessoal" deu cosseno **0,72** com
+`voyage-4-lite` (mesmo assunto, conclusão oposta — é um conflito de
+verdade) — abaixo de 0,84, ou seja, a proposta original teria deixado
+esse conflito passar batido. Medido também um par claramente NÃO
+relacionado ("sempre crie lembretes na lista Trabalho" vs. "gosto de
+café pela manhã"): cosseno **0,55**. `CONFLICT_SIMILARITY_THRESHOLD`
+fechado em **0,68** — no meio dos dois pontos medidos, com folga maior
+do lado de baixo (um falso positivo só custa uma pergunta a mais ao
+usuário; um falso negativo deixa duas preferências contraditórias se
+acumularem silenciosamente, exatamente o bug que esta fase resolve).
+
+### Achado real: cota da Voyage sem cartão cadastrado (3 RPM) — e um bug real que ela expôs no backfill
+
+A conta usada pra validar não tem cartão de pagamento cadastrado — a
+própria API avisa isso no corpo do erro 429: **"reduced rate limits of
+3 RPM and 10K TPM"** até adicionar um método de pagamento no painel da
+Voyage. Não é um bloqueio (o código já degrada graciosamente pra
+FTS5-only em qualquer falha de embedding, ver acima), mas é uma
+limitação prática real: memórias muito antigas do usuário (7 no total,
+de antes desta fase) precisam de embedding retroativo
+(`backfillEmbeddings()`, chamado uma vez em background ao abrir a
+store) — a primeira versão disparava essas chamadas em SEQUÊNCIA sem
+pausa nenhuma, o que estourava a cota inteira sozinho e competia
+DIRETAMENTE com a checagem de conflito de um `memory.remember` real do
+usuário rodando ao mesmo tempo (reproduzido de verdade: um teste de
+ponta a ponta falhou exatamente por isso). Corrigido com uma pausa de
+20s entre cada embedding do backfill (`BACKFILL_DELAY_MS`, `db.ts`) —
+não elimina o limite, mas evita que o PRÓPRIO backfill seja a causa de
+uma checagem de conflito falhar logo depois de abrir o app. Registrado
+pro usuário: cadastrar um cartão no painel da Voyage
+(dashboard.voyageai.com) remove essa cota reduzida, se o uso real
+mostrar que 3 RPM é limitante no dia a dia.
+
+### Validação — de ponta a ponta, com embeddings e agente reais
+
+1. **Matemática/mecanismo isolados**: `findSimilar` testado direto
+   (sem passar pelo agente) com o par de exemplo do pedido — achou a
+   memória "lista Trabalho" como candidata pra "lista Pessoal" com
+   similaridade 0,72, acima do threshold 0,68; e corretamente NÃO achou
+   nada pra um assunto não relacionado ("café de manhã", 0,55).
+2. **Fluxo do agente real, via `createSarahSession`** (mesmo padrão de
+   validação já usado nas Fases 5/6 — `confirm` que auto-aprova, pra
+   testar o FLUXO sem exigir interação manual): pedido pra guardar uma
+   preferência que já tinha uma memória quase idêntica salva disparou
+   `memory.remember` → `conflict: true` → `AskUserQuestion` → Gateway
+   pediu confirmação (mesmo "achado lateral" já documentado na Fase 2:
+   `AskUserQuestion` também é alto risco) → aprovado, mas SEM seletor
+   visual real conectado nesta interface (mesmo achado da Fase 5 parte
+   2) → o agente reconheceu que não recebeu uma escolha capturada e,
+   corretamente, NÃO salvou nem apagou nada sozinho, devolvendo a
+   pergunta em texto pro usuário responder no próximo turno — nenhuma
+   duplicata silenciosa aconteceu.
+3. **Achado sobre o comportamento do modelo**: num segundo teste (pedir
+   pra trocar "lista Trabalho" por "lista Pessoal", já sabendo por
+   `memory.recall` que as duas existiam), o agente escolheu um caminho
+   ALTERNATIVO válido — `memory.recall` (leitura) seguido de
+   `memory.forget` direto na antiga, em vez de passar pelo `conflict`
+   do `remember`. Continua seguro (o Gateway ainda exige confirmação
+   de alto risco pra QUALQUER `forget`, then o usuário sempre tem a
+   chance de negar), só é menos informativo que o fluxo desenhado (não
+   mostra explicitamente "vou trocar X por Y, confirma?" antes de
+   apagar) — registrado como uma segunda porta de entrada legítima pra
+   a mesma garantia de segurança, não um bug a corrigir agora.
+4. **Busca semântica com palavras diferentes**: `memory.recall` com a
+   pergunta "em que período do dia costumo marcar meus encontros de
+   trabalho?" (nenhuma palavra em comum com o texto guardado) encontrou
+   corretamente, no topo dos resultados, as memórias reais do usuário
+   "Prefere que reuniões sejam marcadas de manhã" — confirma a fusão
+   FTS5+vetorial funcionando de ponta a ponta com dado real do usuário,
+   não só dado sintético de teste.
+
+**Achado lateral, não uma pendência desta fase**: os dados reais já
+existentes do usuário (Fase 2) têm 3-4 registros quase idênticos sobre
+"reuniões de manhã" — evidência concreta, no próprio banco de dados
+real, do exato problema que esta fase resolve (guardados antes de
+existir checagem de conflito nenhuma). Não removidos/consolidados por
+esta implementação — decisão de limpar duplicatas JÁ EXISTENTES fica
+com o usuário, não decidida sozinha aqui; a partir de agora, novas
+tentativas de guardar algo parecido vão ser pega pela checagem nova.
+
+**Fase 7, parte 1 está completa.**

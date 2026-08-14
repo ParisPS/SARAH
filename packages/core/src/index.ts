@@ -310,6 +310,25 @@ const GIT_WORKFLOW_POLICY_TEXT =
   "usuário revisar e mesclar pelo GitHub.";
 
 /**
+ * Fase 7, parte 1 (memória semântica) — reforço no `systemPrompt`,
+ * SEMPRE presente, do protocolo de conflito descrito na description da
+ * própria tool `memory.remember` (ver `packages/memory/src/index.ts`):
+ * a description influencia mas não é garantida (mesmo raciocínio já
+ * registrado pra `BASE44_POLICY_TEXT`/`GIT_WORKFLOW_POLICY_TEXT`) — um
+ * pedido longo com várias outras instruções no meio poderia fazer o
+ * modelo "esquecer" o passo de perguntar antes de decidir sozinho
+ * substituir uma preferência. Injetar aqui garante que a regra chega
+ * de novo em TODA chamada, não só na primeira leitura da description.
+ */
+const MEMORY_CONFLICT_POLICY_TEXT =
+  "Memória (memory.remember): se a tool devolver `{conflict: true, existing: {...}}`, isso significa que " +
+  "já existe uma memória parecida da MESMA categoria. NÃO decida sozinho qual manter — pergunte ao " +
+  "usuário via AskUserQuestion (as opções sendo algo como \"substituir a antiga\" ou \"manter as duas\") " +
+  "e só então chame memory.remember de novo com `force: true` (pra SUBSTITUIR, chame memory.forget no id " +
+  "da existente ANTES do remember com force:true). Nunca chame remember com force:true sem essa pergunta " +
+  "primeiro, e nunca ignore um conflito devolvido pela tool.";
+
+/**
  * Fase 4 (Voz), parte 2, ajuste 4 — bug real corrigido: o toggle PT/EN
  * de `apps/menubar` só trocava a VOZ do TTS (`say -v Luciana`/`say -v
  * Samantha`), mas o TEXTO da resposta continuava saindo no idioma que
@@ -466,11 +485,17 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           preferences.map((p) => `- ${p.content}`).join("\n")
         : undefined;
     const outputLanguageText = buildOutputLanguageText(outputLanguage);
-    // BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT e outputLanguageText
-    // (quando presente) entram SEMPRE (não dependem de haver
-    // preferência guardada) — são regra de comportamento do agente,
-    // não fato sobre o usuário.
-    const systemPromptAppend = [BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, outputLanguageText, preferencesText]
+    // BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, MEMORY_CONFLICT_POLICY_TEXT
+    // e outputLanguageText (quando presente) entram SEMPRE (não
+    // dependem de haver preferência guardada) — são regra de
+    // comportamento do agente, não fato sobre o usuário.
+    const systemPromptAppend = [
+      BASE44_POLICY_TEXT,
+      GIT_WORKFLOW_POLICY_TEXT,
+      MEMORY_CONFLICT_POLICY_TEXT,
+      outputLanguageText,
+      preferencesText,
+    ]
       .filter(Boolean)
       .join("\n\n");
 

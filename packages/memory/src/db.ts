@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
+import * as sqliteVec from "sqlite-vec";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { embed, isVoyageConfigured, l2DistanceToCosineSimilarity, normalize } from "./embeddings.js";
 
 export type MemoryCategory = "fato" | "preferencia";
 
@@ -12,6 +14,12 @@ export interface MemoryEntry {
 export interface MemoryRow extends MemoryEntry {
   id: number;
   createdAt: string;
+}
+
+export interface SimilarMemory {
+  row: MemoryRow;
+  /** Similaridade de cosseno, 0 a 1 — quanto maior, mais parecido. */
+  similarity: number;
 }
 
 interface MemoryRowRaw {
@@ -45,6 +53,17 @@ function toFtsQuery(raw: string): string | null {
   return tokens.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
 }
 
+// Quantos vizinhos mais próximos buscar no índice vetorial antes de
+// filtrar por categoria/excluir o próprio id — ver achado real no
+// docs/architecture.md: uma query KNN do sqlite-vec com `k = N` só
+// funciona numa SUBQUERY isolada da tabela virtual (testado de
+// verdade); filtro por categoria e JOIN com `memories` acontecem DEPOIS,
+// na query externa. Um k folgado (bem maior que o volume real de
+// memórias de um assistente pessoal) garante que candidatos da
+// categoria certa não fiquem de fora só por estarem "atrás" de
+// candidatos de outra categoria no ranking geral.
+const VEC_CANDIDATE_K = 30;
+
 /**
  * Memória persistente da SARAH (fatos + preferências), em SQLite
  * próprio — mesmo padrão de `data/sarah.db` do audit log
@@ -57,9 +76,34 @@ function toFtsQuery(raw: string): string | null {
  * `forget()` apagaria a linha de `memories` mas deixaria um registro
  * fantasma pesquisável em `memories_fts` pra sempre — testado
  * isoladamente antes de escrever isto (ver docs/architecture.md).
+ *
+ * FASE 7, PARTE 1 (busca semântica): `memories_vec` é uma segunda
+ * virtual table, desta vez do `sqlite-vec` (extensão de busca
+ * vetorial pra SQLite — CONFIRMADA viável rodando de verdade nesta
+ * máquina, mas registrada como pré-v1/alpha pela própria documentação
+ * oficial, "expect breaking changes"). DIFERENTE da FTS5 acima, ela
+ * NÃO é sincronizada por trigger de INSERT — gerar um embedding é uma
+ * chamada de REDE assíncrona (Voyage AI), e um trigger SQL não pode
+ * esperar isso. Por isso `remember()` virou `async`: insere a linha
+ * em `memories` (síncrono, sempre acontece) e SÓ DEPOIS tenta gerar e
+ * gravar o embedding (best-effort — se a chave da Voyage não estiver
+ * configurada, ou a chamada falhar, a memória continua salva e
+ * buscável por palavra-chave, só fica de fora da busca semântica até
+ * um `backfillEmbeddings()` futuro conseguir preenchê-la). O trigger
+ * de DELETE, ao contrário, é síncrono de verdade (só remove uma linha
+ * já existente) e por isso continua sendo um trigger SQL normal, sem
+ * precisar de rede.
+ *
+ * A extensão é carregada com `try/catch` explícito: se falhar (build
+ * incompatível, binário pré-compilado ausente pra esta plataforma),
+ * `vecAvailable` vira `false` e toda a camada de busca semântica
+ * degrada silenciosamente pra "indisponível" — `memory.recall`
+ * continua funcionando só com FTS5 (comportamento de sempre, nunca
+ * quebra por causa de uma dependência experimental).
  */
 export class MemoryStore {
   private db: Database.Database;
+  private vecAvailable: boolean;
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -81,47 +125,183 @@ export class MemoryStore {
         INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
       END;
     `);
+
+    try {
+      sqliteVec.load(this.db);
+      this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(embedding float[1024])`);
+      // Mesma ideia do trigger de DELETE da FTS5 acima — só que aqui é
+      // condicional: só existe se a extensão carregou (senão a
+      // referência a `memories_vec` no corpo do trigger nem faria
+      // sentido).
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS memories_vec_ad AFTER DELETE ON memories BEGIN
+          DELETE FROM memories_vec WHERE rowid = old.id;
+        END;
+      `);
+      this.vecAvailable = true;
+    } catch (err) {
+      console.error(
+        `[memory] sqlite-vec não pôde ser carregado nesta máquina — busca semântica fica indisponível, ` +
+          `só palavra-chave (FTS5) continua funcionando. Detalhe: ${err instanceof Error ? err.message : String(err)}`
+      );
+      this.vecAvailable = false;
+    }
   }
 
-  remember(entry: MemoryEntry): MemoryRow {
+  /**
+   * Grava a memória (sempre) e, best-effort, o embedding dela (só se
+   * `sqlite-vec` carregou E `VOYAGE_API_KEY` estiver configurada) —
+   * falha ao gerar/gravar o embedding NUNCA impede a memória de ser
+   * salva, só a deixa de fora da busca semântica até um backfill.
+   */
+  async remember(entry: MemoryEntry): Promise<MemoryRow> {
     const createdAt = new Date().toISOString();
     const result = this.db
       .prepare(`INSERT INTO memories (content, category, created_at) VALUES (?, ?, ?)`)
       .run(entry.content, entry.category, createdAt);
-    return { id: Number(result.lastInsertRowid), content: entry.content, category: entry.category, createdAt };
+    const row: MemoryRow = { id: Number(result.lastInsertRowid), content: entry.content, category: entry.category, createdAt };
+
+    await this.tryEmbed(row.id, row.content);
+    return row;
+  }
+
+  private async tryEmbed(id: number, content: string): Promise<void> {
+    if (!this.vecAvailable || !isVoyageConfigured()) return;
+    try {
+      // Sempre uma linha NOVA (nunca reembeda um id já presente —
+      // `remember()` acabou de criar o id, `backfillEmbeddings()` já
+      // filtra por `NOT IN (SELECT rowid FROM memories_vec)`), então
+      // um INSERT simples basta — sem depender de `OR REPLACE` ter
+      // suporte real em cima do módulo de tabela virtual do sqlite-vec.
+      const vector = normalize(await embed(content, "document"));
+      this.db.prepare(`INSERT INTO memories_vec(rowid, embedding) VALUES (?, ?)`).run(BigInt(id), JSON.stringify(vector));
+    } catch (err) {
+      console.error(`[memory] falha ao gerar embedding da memória #${id} (salva normalmente, só sem busca semântica): ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   /**
-   * Busca por palavra-chave (FTS5). Sem `query` (ou só pontuação/
-   * vazio), devolve as memórias mais recentes em vez de tentar casar
-   * palavra-chave — cobre perguntas abertas tipo "o que você sabe
-   * sobre mim?", onde não há um termo específico pra buscar (testado
-   * isoladamente: um FTS5 MATCH com os tokens de uma pergunta genérica
-   * como essa não bate com nada guardado, então a busca por palavra-
-   * chave sozinha não resolveria esse caso de uso).
+   * Busca por SIMILARIDADE SEMÂNTICA (não palavra-chave) restrita a
+   * `category` — usada por `memory.remember` (Fase 7 parte 1) ANTES
+   * de gravar, pra detectar uma preferência/fato parecido já existente
+   * e evitar empilhar silenciosamente duas versões conflitantes da
+   * mesma regra. Devolve o candidato mais parecido acima de
+   * `threshold` (similaridade de cosseno, 0 a 1), ou `null` se a busca
+   * semântica estiver indisponível (sem sqlite-vec/chave da Voyage) ou
+   * nada passar do limiar.
    */
-  recall(query?: string, limit = 20): MemoryRow[] {
-    const trimmed = query?.trim();
-    const ftsQuery = trimmed ? toFtsQuery(trimmed) : null;
+  async findSimilar(content: string, category: MemoryCategory, threshold: number): Promise<SimilarMemory | null> {
+    if (!this.vecAvailable || !isVoyageConfigured()) return null;
 
-    if (!ftsQuery) {
+    let queryVector: number[];
+    try {
+      queryVector = normalize(await embed(content, "document"));
+    } catch (err) {
+      console.error(`[memory] falha ao gerar embedding pra checagem de duplicata: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+
+    // KNN isolado numa subquery (achado real, ver docs/architecture.md:
+    // `k = N` só é aceito quando a tabela virtual é a ÚNICA fonte da
+    // query — filtro de categoria/JOIN precisam acontecer por fora).
+    const candidates = this.db
+      .prepare(
+        `SELECT m.id, m.content, m.category, m.created_at, v.distance
+         FROM (SELECT rowid, distance FROM memories_vec WHERE embedding MATCH ? AND k = ?) v
+         JOIN memories m ON m.id = v.rowid
+         WHERE m.category = ?
+         ORDER BY v.distance
+         LIMIT 1`
+      )
+      .all(JSON.stringify(queryVector), VEC_CANDIDATE_K, category) as Array<MemoryRowRaw & { distance: number }>;
+
+    const best = candidates[0];
+    if (!best) return null;
+
+    const similarity = l2DistanceToCosineSimilarity(best.distance);
+    if (similarity < threshold) return null;
+    return { row: fromRaw(best), similarity };
+  }
+
+  /**
+   * Busca por palavra-chave (FTS5) FUNDIDA com busca por similaridade
+   * semântica (sqlite-vec), quando disponível — Fase 7 parte 1. Fusão
+   * por Reciprocal Rank Fusion (RRF): cada fonte contribui
+   * `1 / (60 + posição)` por resultado (60 é a constante clássica do
+   * RRF, usada como está na literatura — sem inventar um peso novo
+   * pra calibrar); um id que aparece nas DUAS listas soma as duas
+   * pontuações. Resolve um problema real de combinar ranks: o "rank"
+   * do FTS5 (BM25) e a "distância" do sqlite-vec vivem em escalas
+   * totalmente diferentes e incomparáveis — RRF ignora a escala
+   * original, só usa a POSIÇÃO de cada resultado dentro da própria
+   * lista, então nunca precisa de um fator de conversão arbitrário
+   * entre os dois.
+   *
+   * Sem `query` (pergunta aberta, tipo "o que você sabe sobre mim?"):
+   * mesmo comportamento de sempre, mais recentes primeiro — não faz
+   * sentido semântico nem por palavra-chave sem um termo pra comparar.
+   */
+  async recall(query?: string, limit = 20): Promise<MemoryRow[]> {
+    const trimmed = query?.trim();
+    if (!trimmed) {
       const rows = this.db
         .prepare(`SELECT id, content, category, created_at FROM memories ORDER BY id DESC LIMIT ?`)
         .all(limit) as MemoryRowRaw[];
       return rows.map(fromRaw);
     }
 
-    const rows = this.db
-      .prepare(
-        `SELECT m.id, m.content, m.category, m.created_at
-         FROM memories_fts f
-         JOIN memories m ON m.id = f.rowid
-         WHERE memories_fts MATCH ?
-         ORDER BY rank
-         LIMIT ?`
-      )
-      .all(ftsQuery, limit) as MemoryRowRaw[];
-    return rows.map(fromRaw);
+    const ftsQuery = toFtsQuery(trimmed);
+    const ftsRows = ftsQuery
+      ? (this.db
+          .prepare(
+            `SELECT m.id, m.content, m.category, m.created_at
+             FROM memories_fts f
+             JOIN memories m ON m.id = f.rowid
+             WHERE memories_fts MATCH ?
+             ORDER BY rank
+             LIMIT ?`
+          )
+          .all(ftsQuery, limit) as MemoryRowRaw[])
+      : [];
+
+    let vectorRows: MemoryRowRaw[] = [];
+    if (this.vecAvailable && isVoyageConfigured()) {
+      try {
+        const queryVector = normalize(await embed(trimmed, "query"));
+        vectorRows = this.db
+          .prepare(
+            `SELECT m.id, m.content, m.category, m.created_at
+             FROM (SELECT rowid, distance FROM memories_vec WHERE embedding MATCH ? AND k = ?) v
+             JOIN memories m ON m.id = v.rowid
+             ORDER BY v.distance
+             LIMIT ?`
+          )
+          .all(JSON.stringify(queryVector), VEC_CANDIDATE_K, limit) as MemoryRowRaw[];
+      } catch (err) {
+        console.error(`[memory] busca semântica falhou, seguindo só com palavra-chave: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (ftsRows.length === 0 && vectorRows.length === 0) return [];
+
+    const RRF_K = 60;
+    const scoreById = new Map<number, number>();
+    const rowById = new Map<number, MemoryRowRaw>();
+    for (const [i, r] of ftsRows.entries()) {
+      scoreById.set(r.id, (scoreById.get(r.id) ?? 0) + 1 / (RRF_K + i + 1));
+      rowById.set(r.id, r);
+    }
+    for (const [i, r] of vectorRows.entries()) {
+      scoreById.set(r.id, (scoreById.get(r.id) ?? 0) + 1 / (RRF_K + i + 1));
+      rowById.set(r.id, r);
+    }
+
+    const ranked = Array.from(scoreById.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([id]) => rowById.get(id))
+      .filter((r): r is MemoryRowRaw => r !== undefined);
+    return ranked.map(fromRaw);
   }
 
   /** `true` se algo foi de fato apagado; `false` se o id não existia. */
@@ -142,6 +322,52 @@ export class MemoryStore {
       .prepare(`SELECT id, content, category, created_at FROM memories WHERE category = ? ORDER BY id ASC`)
       .all(category) as MemoryRowRaw[];
     return rows.map(fromRaw);
+  }
+
+  /** Contagem simples — usada pelo aviso consultivo de crescimento (Fase 7 parte 1, ver `packages/memory/src/index.ts`). */
+  countByCategory(category: MemoryCategory): number {
+    const row = this.db.prepare(`SELECT COUNT(*) as n FROM memories WHERE category = ?`).get(category) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Gera embeddings pras memórias que ainda não têm um (nunca tiveram
+   * `sqlite-vec`/`VOYAGE_API_KEY` disponíveis quando foram criadas, ou
+   * já existiam antes desta fase) — chamado uma vez, em background,
+   * logo depois de abrir a store (`createMemoryServer`, ver
+   * `packages/memory/src/index.ts`), sem bloquear nada: se falhar (sem
+   * chave configurada, por exemplo), simplesmente não preenche nada
+   * agora, sem quebrar a inicialização do resto do app.
+   *
+   * ACHADO REAL testando com uma conta Voyage sem cartão cadastrado
+   * (cota reduzida documentada pela própria API: 3 requisições por
+   * MINUTO): a primeira versão disparava os embeddings do backfill em
+   * sequência SEM pausa nenhuma — pra qualquer usuário com mais de 2-3
+   * memórias antigas ainda sem embedding, isso estourava a cota
+   * inteira sozinho, competindo com (e derrubando) a checagem de
+   * conflito/embedding de um `memory.remember` real do usuário
+   * acontecendo ao mesmo tempo (reproduzido de verdade: um teste de
+   * ponta a ponta chegou a falhar por causa disso). Corrigido com uma
+   * pausa de `BACKFILL_DELAY_MS` entre cada chamada — não elimina o
+   * limite (só uma `GOOGLE_API_KEY`... digo, um cartão cadastrado na
+   * Voyage faz isso, ver `.env.example`), mas evita que o PRÓPRIO
+   * backfill seja a causa de um `memory.remember` do usuário falhar
+   * logo depois de abrir o app. Sequencial, nunca em paralelo, pelo
+   * mesmo motivo.
+   */
+  async backfillEmbeddings(): Promise<void> {
+    if (!this.vecAvailable || !isVoyageConfigured()) return;
+    const missing = this.db
+      .prepare(`SELECT id, content, category, created_at FROM memories WHERE id NOT IN (SELECT rowid FROM memories_vec)`)
+      .all() as MemoryRowRaw[];
+    if (missing.length === 0) return;
+    console.error(`[memory] preenchendo embedding de ${missing.length} memória(s) antiga(s) em background (com pausa entre cada uma, pra não estourar a cota da Voyage)...`);
+    const BACKFILL_DELAY_MS = 20_000; // ~3 requisições/minuto, o mesmo teto da cota sem cartão cadastrado
+    for (const [i, row] of missing.entries()) {
+      if (i > 0) await new Promise((resolve) => setTimeout(resolve, BACKFILL_DELAY_MS));
+      await this.tryEmbed(row.id, row.content);
+    }
+    console.error(`[memory] backfill de embeddings concluído.`);
   }
 
   close(): void {

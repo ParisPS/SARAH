@@ -1,4 +1,4 @@
-# SARAH — Fases 0-6 completas (Figma com pendência de cota)
+# SARAH — Fases 0-6 completas, Fase 7 parte 1 (Figma com pendência de cota)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -268,13 +268,53 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   existente do usuário, cada um passando por branch → commit → push
   (confirmado) → PR aparecendo no GitHub, sem merge automático.
 
+## Fase 7 — memória semântica (parte 1: embeddings)
+
+- **`memory.recall` combina palavra-chave (FTS5) com similaridade
+  SEMÂNTICA** (embeddings da Voyage AI, modelo `voyage-4-lite`,
+  armazenados via `sqlite-vec` no mesmo `sarah-memory.db`) — encontra
+  uma memória mesmo quando a pergunta usa palavras totalmente
+  diferentes das que foram guardadas (ex.: perguntar "em que período
+  do dia costumo marcar encontros?" acha "prefere reuniões de manhã",
+  sem nenhuma palavra em comum). Os dois resultados (palavra-chave +
+  semântico) são fundidos por Reciprocal Rank Fusion, sem precisar
+  calibrar um peso entre escalas incomparáveis (rank do FTS5 vs.
+  distância vetorial).
+- **`memory.remember` detecta preferência/fato semanticamente parecido
+  ANTES de gravar** — se achar algo parecido (não precisa ser texto
+  idêntico) da MESMA categoria já guardado, não grava direto: devolve
+  a memória conflitante e pede pro agente perguntar ao usuário se é
+  pra SUBSTITUIR ou MANTER AS DUAS, em vez de empilhar silenciosamente
+  uma contradição. `memory.remember` continua baixo risco sempre; só o
+  `memory.forget` de uma eventual substituição passa pela confirmação
+  de alto risco de sempre.
+- **Resolve as duas notas pendentes da Fase 2**, sem abrir mão das
+  garantias que motivaram deixá-las pendentes: a lista de preferências
+  injetada no `systemPrompt` continua SEM filtro nenhum (nenhuma
+  preferência deixa de valer por "parecer irrelevante" ao pedido
+  atual) — só ganhou um teto consultivo (aviso quando passar de 40,
+  nunca um bloqueio).
+- **Se `VOYAGE_API_KEY` não estiver configurada** (ver `.env.example`),
+  a memória continua funcionando NORMALMENTE — só palavra-chave via
+  FTS5, exatamente como antes desta fase, sem erro nenhum visível.
+- **Validado:** calibração do limiar de similaridade com embeddings
+  REAIS (não intuição) usando o próprio par de exemplo do pedido;
+  fluxo completo via o agente real (`memory.remember` → conflito →
+  `AskUserQuestion` → Gateway pede confirmação → sem seletor visual
+  capturado, o agente pergunta em texto no lugar de decidir sozinho);
+  busca semântica encontrando memórias reais do usuário com uma
+  pergunta em palavras diferentes das guardadas — ver
+  `docs/architecture.md` pros achados reais (`sqlite-vec` exige rowid
+  `BigInt`, cota reduzida da Voyage sem cartão cadastrado, bug real de
+  backfill sem throttle competindo pela cota).
+
 **O que este código NÃO faz ainda (de propósito):** merge de Pull
 Request (sempre manual, pelo GitHub — decisão deliberada da Fase 6,
 não uma lacuna),
 deploy público de sites (só preview local dentro do sandbox), imagem
 realista/vídeo (Fase 5, decisões conscientes de não seguir por
-enquanto) e memória semântica — ver o roadmap completo em
-`docs/architecture.md`.
+enquanto) e observabilidade/nuance no risco médio (Fase 7, partes
+futuras) — ver o roadmap completo em `docs/architecture.md`.
 
 ## Setup
 
@@ -309,6 +349,15 @@ read`+`current_user:read`, Keychain) antes do primeiro
 Full pago no Figma têm um limite de só ~6 chamadas por MÊS pra leitura
 de arquivo + exportação de imagem juntas (ver `docs/architecture.md`,
 Fase 5 parte 7).
+
+Pra Fase 7 (memória semântica): `VOYAGE_API_KEY` no `.env` (crie uma
+conta em https://dashboard.voyageai.com) — **atenção à cota**: sem
+cartão de pagamento cadastrado no painel da Voyage, o limite é de só 3
+requisições por MINUTO, o que pode fazer a busca semântica falhar
+ocasionalmente sob uso pesado (degrada pra busca por palavra-chave
+automaticamente, nunca quebra o app — ver `docs/architecture.md`, Fase
+7 parte 1). Sem essa chave configurada, a memória funciona
+normalmente, só sem busca semântica/checagem de conflito.
 
 ## O que testar
 
@@ -388,6 +437,18 @@ sem confirmação), commita nela, e só então `create_pull_request` pede
 confirmação (**alto risco**, mostra projeto/título/base/descrição)
 antes de enviar a branch e abrir o PR de verdade no GitHub — sem
 mesclar sozinha.
+
+**Fase 7**: `lembra que eu sempre quero que lembretes sejam criados na
+lista Trabalho por padrão`, depois (numa mensagem separada) `na
+verdade, prefiro que lembretes vão pra lista Pessoal por padrão` —
+confirme que a SARAH detecta a semelhança com a preferência anterior
+(via `memory.remember` ou `memory.recall`) e pergunta antes de decidir
+substituir ou manter as duas, em vez de guardar as duas
+silenciosamente. `o que você sabe sobre mim?` continua funcionando
+como antes; pergunte algo com PALAVRAS DIFERENTES do que foi guardado
+(ex.: se guardou algo sobre "reuniões de manhã", pergunte "que período
+do dia costumo marcar encontros?") pra confirmar que a busca semântica
+encontra mesmo assim.
 
 A primeira chamada de cada integração do sistema (Calendar, Reminders,
 Notes) deve mostrar um diálogo do macOS pedindo permissão pro processo

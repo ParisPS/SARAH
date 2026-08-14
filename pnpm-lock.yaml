@@ -159,6 +159,9 @@ importers:
       better-sqlite3:
         specifier: ^11.3.0
         version: 11.10.0
+      sqlite-vec:
+        specifier: ^0.1.10-alpha.4
+        version: 0.1.10-alpha.4
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -949,6 +952,34 @@ packages:
 
   simple-get@4.0.1:
     resolution: {integrity: sha512-brv7p5WgH0jmQJr1ZDDfKDOSeWWg+OVypG99A/5vYGPqJ6pxiaHLy8nxtFjBA7oMa01ebA9gfh1uMCFqOuXxvA==}
+
+  sqlite-vec-darwin-arm64@0.1.10-alpha.4:
+    resolution: {integrity: sha512-PK/Ont16u4nig8J3WNhhw7ZdTsCdF7M296R9FGIoO+ygDflGwDFPdr9V7xhYvbZYyAea+n4chWsd27KBphXh4w==}
+    cpu: [arm64]
+    os: [darwin]
+
+  sqlite-vec-darwin-x64@0.1.10-alpha.4:
+    resolution: {integrity: sha512-NF2leZqfNAQ605GsZkE++qlPrG0Mz1Sgf2Trctjj+qSwglurRcRegP9GSPxEV3I/Rh0bhiGN0L1nGOk88hjoQg==}
+    cpu: [x64]
+    os: [darwin]
+
+  sqlite-vec-linux-arm64@0.1.10-alpha.4:
+    resolution: {integrity: sha512-qF7kG0aYQ3LpjyxA3QCgtoDGX0W2l4ZyxeSMzE6vq77LnDutfCmgqdGVs80Qn31dTVDTs51e18jLZWxvAZkjYQ==}
+    cpu: [arm64]
+    os: [linux]
+
+  sqlite-vec-linux-x64@0.1.10-alpha.4:
+    resolution: {integrity: sha512-fX7KE6qfCdRg6gWSc/2rOQ8ZNs+Ex4RhHFTYtlpinHvuZoaaBI7sUBU7EpL0lW/+DDbUxQ3O5XywRTXtv9RU5A==}
+    cpu: [x64]
+    os: [linux]
+
+  sqlite-vec-windows-x64@0.1.10-alpha.4:
+    resolution: {integrity: sha512-njyLiQBLWrtApR1M+UqUfyhsJylgdyW3B5/bRaaqz4ByLrX1OPlSA2AniuOT0dXH+vZCZs8wUMGdN87PGCt+hQ==}
+    cpu: [x64]
+    os: [win32]
+
+  sqlite-vec@0.1.10-alpha.4:
+    resolution: {integrity: sha512-Ce5zw8jkaJJlPoPp6aaxCjL/niC7bRw3TT6oeEmFqYLMiHU5eB7i9pvVWM6TaqmvgNCl3XJUBNmFRcI/RHPVhQ==}
 
   standardwebhooks@1.0.0:
     resolution: {integrity: sha512-BbHGOQK9olHPMvQNHWul6MYlrRTAOKn03rOe4A8O3CLWhNf4YHBqq2HJKKC+sfqpxiBY52pNeesD6jIiLDz8jg==}
@@ -1826,6 +1857,29 @@ snapshots:
       decompress-response: 6.0.0
       once: 1.4.0
       simple-concat: 1.0.1
+
+  sqlite-vec-darwin-arm64@0.1.10-alpha.4:
+    optional: true
+
+  sqlite-vec-darwin-x64@0.1.10-alpha.4:
+    optional: true
+
+  sqlite-vec-linux-arm64@0.1.10-alpha.4:
+    optional: true
+
+  sqlite-vec-linux-x64@0.1.10-alpha.4:
+    optional: true
+
+  sqlite-vec-windows-x64@0.1.10-alpha.4:
+    optional: true
+
+  sqlite-vec@0.1.10-alpha.4:
+    optionalDependencies:
+      sqlite-vec-darwin-arm64: 0.1.10-alpha.4
+      sqlite-vec-darwin-x64: 0.1.10-alpha.4
+      sqlite-vec-linux-arm64: 0.1.10-alpha.4
+      sqlite-vec-linux-x64: 0.1.10-alpha.4
+      sqlite-vec-windows-x64: 0.1.10-alpha.4
 
   standardwebhooks@1.0.0:
     dependencies:
