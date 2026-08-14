@@ -4495,3 +4495,75 @@ Limpo depois da validação: um fato de teste próprio salvo em
 das correções anteriores desta fase.
 
 **Fase 7, parte 2 (primeira peça — resultado real da execução) está completa.**
+
+## Investigação pós-entrega: `mcp__sarah-figma__export_assets` com `status`/`error_message` vazios — não era um bug de código
+
+Achado do usuário: três chamadas reais a `export_assets` no audit log
+de produção (incluindo uma feita DEPOIS do commit da correção acima)
+apareciam com `status` e `error_message` vazios, apesar do rate limit
+do Figma estar ativo (chamadas quase certamente falhando). Suspeita
+levantada: talvez `export_assets` lance exceção (`throw`) no caminho
+de rate limit em vez de devolver `{ok, error}` como o resto das tools,
+e talvez `PostToolUseFailure` (o mecanismo original) tivesse sido
+abandonado quando a correção anterior focou no `tool_response`.
+
+### Respondendo às duas perguntas, com código e teste real — nenhuma das duas suspeitas se confirmou
+
+1. **`export_assets` lança exceção no caminho de rate limit?** Sim,
+   `fetchFigmaFile`/`exportImages` (`packages/sandbox/src/figma.ts`)
+   fazem `throw new Error(...)` quando a resposta HTTP não é `ok`,
+   incluindo o texto de `rateLimitInfo()` (Retry-After/tipo/plano). MAS
+   esse `throw` acontece DENTRO do `try` que envolve o handler inteiro
+   da tool (linhas 414-505) — o `catch` no fim converte pra
+   `{content: [...{ok:false, error: err.message}]}`, exatamente a
+   MESMA convenção que Gmail já usa. Do ponto de vista do protocolo
+   MCP/SDK, isto é um sucesso (a tool rodou e devolveu uma resposta),
+   não uma exceção não capturada — já coberto por `extractToolError()`
+   desde a correção anterior, sem precisar de nenhuma mudança.
+2. **`PostToolUseFailure` foi abandonado?** Não — conferido direto no
+   código atual (`packages/core/src/index.ts`): `hooks: { PostToolUse:
+   [{hooks:[onPostToolUse]}], PostToolUseFailure: [{hooks:[onPostToolUse]}]
+   }` continua registrando os dois eventos pro mesmo handler. Nada foi
+   removido; o mecanismo original continua ativo em paralelo ao novo,
+   exatamente como desenhado (`PostToolUseFailure` cobre a exceção não
+   capturada de verdade — rara, mas ainda tratada; `PostToolUse` +
+   `extractToolError` cobre o `{ok,error}` "educado" — a maioria).
+
+### Causa real: processo do daemon já rodando ANTES da correção, não código com bug
+
+Testado de novo o `export_assets` pelo caminho de produção real
+(`daemon.ts` recém-spawnado, mesmo protocolo de sempre) contra o
+mesmo arquivo real usado na Fase 5 parte 6/7
+(`teste-figma-dairy`/`QkiFeHLqU3WOgfiWassiXL`) — o rate limit
+CONTINUAVA ativo (HTTP 429 de verdade, `Retry-After: 264339s`, tipo
+"high", plano "starter") e desta vez o audit log capturou tudo
+corretamente: `status = 'error'`, `error_message` com a mensagem REAL
+da API incluindo os dados de rate limit, e visível em
+`dashboard().recentErrors`. Ou seja, o código ATUAL funciona certo
+pros dois casos — a pergunta virou "por que as três chamadas antigas
+ficaram vazias, se o código já cobre isso?".
+
+Resposta, confirmada olhando `apps/menubar/src/main-process.ts`: o
+processo do daemon (`spawnSarahDaemon`) é criado UMA VEZ, quando o app
+Electron abre (`daemon = spawnSarahDaemon(...)`, atribuído a uma
+variável de módulo, reusado por TODA chamada de `ask()`/`dashboard()`
+daquela sessão do app) — nunca respawnado por pedido. `tsx` carrega o
+código-fonte só na hora que o processo NASCE; um processo já rodando
+não passa a enxergar uma mudança de código feita no disco depois,
+mesmo com `git pull`/commit novo. Se o app do usuário já estava aberto
+quando a correção anterior foi commitada (bem provável: a terceira
+chamada aconteceu só ~3 minutos depois do commit, tempo real
+insuficiente pra imaginar um restart do app no meio), o daemon daquela
+sessão continuou rodando a versão ANTERIOR do Gateway (sem
+`toolUseId`) até o app ser fechado e reaberto — explica as três linhas
+com `tool_use_id` NULO desde a inserção (confirmado direto no banco:
+`tool_use_id IS NULL`, não uma string vazia), não só `status`/
+`error_message` vazios por causa de alguma falha na correlação em si.
+
+**Nenhuma mudança de código foi necessária** — o mecanismo já cobre os
+dois casos corretamente. Lição registrada aqui pra não repetir a
+mesma investigação: sempre que uma correção mexer em `packages/core`/
+`packages/permissions` (código que roda dentro do daemon), o efeito só
+vale pra sessões do `apps/menubar` abertas DEPOIS do commit — reiniciar
+o app (ou usar `apps/cli`, que sobe um processo novo a cada `pnpm dev`)
+é necessário pra observar a mudança de verdade.
