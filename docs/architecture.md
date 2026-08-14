@@ -4259,4 +4259,128 @@ esta implementação — decisão de limpar duplicatas JÁ EXISTENTES fica
 com o usuário, não decidida sozinha aqui; a partir de agora, novas
 tentativas de guardar algo parecido vão ser pega pela checagem nova.
 
-**Fase 7, parte 1 está completa.**
+## Correção pós-entrega na Fase 7, parte 1: `memory.forget` quebrava com `no such module: vec0`
+
+Bug real encontrado pelo usuário rodando o app de verdade (não o
+`createSarahSession()` isolado que validou a entrega original acima —
+essa foi exatamente a lacuna: o processo REAL do usuário é
+`apps/menubar/src/daemon.ts`, um processo filho de vida longa, spawnado
+uma única vez por sessão do app via `tsx`/Node normal, ver "Parede real
+#2" na Fase 4 — `better-sqlite3`/`sqlite-vec` nunca rodam dentro do
+processo Electron em si). Tentar substituir a preferência "lista
+Trabalho" pela "lista Pessoal" (o próprio par de exemplo usado na
+validação original) falhou duas vezes seguidas com `no such module:
+vec0` durante o `memory.forget` da antiga — e a linha **continuava**
+em `memories` e `memories_fts` depois da falha, não só "faltando" em
+`memories_vec`.
+
+### Causa raiz: trigger SQL grava no ESQUEMA DO ARQUIVO, `vecAvailable` só vale por CONEXÃO
+
+A implementação original sincronizava `memories_vec` num `DELETE` de
+`memories` via um trigger SQL (`memories_vec_ad`), no mesmo espírito do
+trigger de DELETE da FTS5 (que É necessário e correto — FTS5 é
+embutido no SQLite, sempre disponível). A diferença crítica: um
+trigger, uma vez criado, fica gravado no **esquema do arquivo `.db`**
+pra sempre — não é "por conexão" como a flag `vecAvailable` (setada em
+cada `new MemoryStore()`, dependendo se `sqlite-vec` conseguiu
+carregar NAQUELA conexão). Sequência real que reproduz o bug: (1) uma
+conexão anterior consegue carregar `sqlite-vec` com sucesso e cria o
+trigger; (2) uma conexão POSTERIOR (nova sessão do app, ou a mesma
+sessão depois de algo impedir o carregamento da extensão dessa vez —
+não foi necessário isolar o motivo exato, ver próxima seção) tem
+`vecAvailable = false`; (3) essa conexão chama `forget()`, que faz só
+`DELETE FROM memories WHERE id = ?` — mas o SQLite ainda tenta EXECUTAR
+o trigger `memories_vec_ad` incondicionalmente (triggers rodam no
+motor SQL, não são algo que o código JS possa pular com um
+`if (this.vecAvailable)` como as outras operações em `memories_vec`
+já faziam) → falha com `no such module: vec0`, DENTRO da transação
+implícita do próprio `DELETE` → a remoção inteira é desfeita, nem
+`memories` nem `memories_fts` chegam a ser apagados.
+
+**Confirmado direto no banco real antes de mexer em qualquer código**
+(pedido explícito do usuário, não assumido): `SELECT id, category,
+content FROM memories` mostrou id 13 ("lista Trabalho") E id 14
+("lista Pessoal") ainda os dois presentes — a substituição realmente
+nunca tinha acontecido. Reproduzido isoladamente com o `sqlite3` CLI
+do sistema (que nunca carrega extensões): `SELECT rowid FROM
+memories_vec` contra o banco real devolveu o mesmo erro `no such
+module: vec0` — confirma que QUALQUER conexão sem a extensão
+carregada, ao tocar `memories_vec` (direto ou via trigger), falha do
+mesmo jeito.
+
+Mesma CLASSE de bug já vista na Fase 2 (trigger de DELETE da FTS5
+faltando → registro fantasma pesquisável) — mas invertido: lá faltava
+um trigger necessário; aqui existe um trigger que depende de um módulo
+OPCIONAL nem sempre disponível na conexão que o executa, e por isso
+não pode ser a única forma de manter `memories_vec` sincronizada.
+
+### Correção: limpeza de `memories_vec` vira código JS, nunca mais trigger SQL
+
+Duas partes, as duas em `packages/memory/src/db.ts`:
+
+1. **`forget(id)` passa a limpar `memories_vec` explicitamente em JS**,
+   depois do `DELETE FROM memories` já confirmado, guardado por `if
+   (this.vecAvailable)` (mesmo padrão de guarda já usado em
+   `findSimilar`/`recall`/`tryEmbed`) e dentro de `try/catch` que nunca
+   propaga — mesmo espírito best-effort do `tryEmbed`: a operação
+   principal (apagar a memória) nunca pode ser bloqueada por uma falha
+   na camada de busca semântica, que é opcional por design.
+2. **Migração idempotente `DROP TRIGGER IF EXISTS memories_vec_ad`**,
+   rodando incondicionalmente na inicialização de QUALQUER
+   `MemoryStore` — inclusive ANTES de tentar carregar `sqlite-vec`,
+   testado isoladamente que `DROP TRIGGER` não precisa do módulo vec0
+   registrado nesta conexão. Sem isso, bancos como o de produção deste
+   projeto (criados pela primeira versão desta fase) continuariam com
+   o trigger legado pra sempre, e o bug voltaria a acontecer na próxima
+   vez que uma conexão sem a extensão tentasse apagar algo.
+
+Uma eventual linha órfã deixada em `memories_vec` (memória apagada numa
+conexão sem a extensão carregada, então sem a limpeza em JS) nunca
+aparece de volta em busca nenhuma: tanto `findSimilar` quanto `recall`
+fazem `JOIN memories m ON m.id = v.rowid` — um INNER JOIN comum, que
+descarta silenciosamente qualquer rowid de `memories_vec` sem linha
+correspondente em `memories`. Não é preciso garantir 100% de limpeza
+imediata pra manter a busca correta, só não deixar a limpeza bloquear
+a operação principal — mesmo trade-off já aceito no resto desta fase.
+
+### Validação da correção — três camadas, a última pelo caminho REAL de produção
+
+1. **Mecanismo isolado, com a extensão deliberadamente quebrada**:
+   renomeado temporariamente o `.dylib` do `sqlite-vec` (restaurado
+   logo em seguida), instanciado `MemoryStore` contra uma CÓPIA do
+   banco real (nunca o arquivo de verdade) — `vecAvailable` confirmado
+   `false`, e `forget()` removeu a linha com sucesso, sem erro nenhum:
+   reproduz e resolve o cenário exato do bug.
+2. **Migração confirmada no banco real**: depois de rodar o código
+   corrigido uma vez contra `data/sarah-memory.db`, `.schema` não lista
+   mais nenhum trigger com "vec" no nome — o trigger legado que causava
+   o problema foi removido de verdade, não só num teste isolado.
+3. **Caminho de produção real, não `createSarahSession()` isolado**:
+   um script spawnou `apps/menubar/src/daemon.ts` exatamente como
+   `apps/menubar/src/sarah-daemon.ts` faz (mesmo binário `tsx`, mesmo
+   protocolo JSON Lines via stdin/stdout, `confirm-request` auto-
+   aprovado) — a mesma fronteira de processo que causou o bug original
+   e que a validação anterior desta fase não tinha exercitado. Um par
+   NOVO de preferências conflitantes (não "Trabalho"/"Pessoal", já
+   usado antes): "sempre incluir previsão do tempo no resumo matinal"
+   vs. "NÃO incluir, é redundante". Pedido pro agente resolver o
+   conflito com `memory.forget` na antiga → **sem erro nenhum** desta
+   vez. Conferido direto no banco depois: a antiga sumiu das TRÊS
+   tabelas (`memories`, `memories_fts` E `memories_vec` — não só duas
+   de três, que era exatamente o sintoma do bug original) e a nova
+   permaneceu íntegra nas três.
+
+**Achado lateral do próprio processo de teste**: um script de teste
+meu, mal roteirizado (uma pergunta ambígua na terceira mensagem de uma
+conversa com duas perguntas em aberto), fez o agente apagar por engano
+a preferência REAL "lista Pessoal" do usuário (a que devia ter sido
+mantida) em vez de uma memória de teste. Detectado imediatamente
+comparando o estado do banco antes/depois de cada passo (mesma
+disciplina usada no resto desta correção), e corrigido restaurando o
+conteúdo original da memória (novo id, mesmo texto) antes de prosseguir
+— nenhum dado real do usuário ficou perdido, mas registrado aqui como
+lembrete de que testar contra o banco de produção real (necessário
+pra validar o bug de verdade) exige o mesmo cuidado de qualquer
+operação destrutiva contra dado real.
+
+**Fase 7, parte 1 está completa — incluindo esta correção.**

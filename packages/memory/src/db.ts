@@ -100,6 +100,51 @@ const VEC_CANDIDATE_K = 30;
  * degrada silenciosamente pra "indisponível" — `memory.recall`
  * continua funcionando só com FTS5 (comportamento de sempre, nunca
  * quebra por causa de uma dependência experimental).
+ *
+ * BUG REAL encontrado rodando o app de verdade (não só
+ * `createSarahSession()` isolado, que foi o que validou a Fase 7
+ * parte 1 originalmente — a lacuna de validação era exatamente essa:
+ * o processo REAL do usuário é `apps/menubar/src/daemon.ts`, um
+ * processo filho de vida longa, um `MemoryStore`/uma única conexão
+ * por sessão do app): a PRIMEIRA versão desta classe sincronizava
+ * `memories_vec` num DELETE de `memories` via TRIGGER SQL (mesmo
+ * padrão do trigger de DELETE da FTS5 acima). Um trigger, uma vez
+ * criado, fica gravado no ESQUEMA DO ARQUIVO .db pra sempre — não é
+ * "por conexão" como `vecAvailable`. Então, se uma conexão ANTERIOR
+ * (ou uma sessão anterior do app) conseguiu carregar `sqlite-vec` e
+ * criou o trigger, e uma conexão POSTERIOR (nova sessão do app, ou a
+ * mesma sessão após algo impedir o carregamento da extensão dessa vez
+ * — não importa o motivo exato) tem `vecAvailable = false`, o SQLite
+ * ainda assim tenta EXECUTAR o trigger em todo DELETE (trigger roda no
+ * nível do motor SQL, não é algo que o código JS possa pular condicionalmente
+ * feito o `if (this.vecAvailable)` usado nas outras operações) — e
+ * falha com `no such module: vec0`, DENTRO da transação implícita do
+ * próprio DELETE, derrubando a remoção inteira: nem `memories`, nem
+ * `memories_fts` chegavam a ser apagados (reproduzido de verdade:
+ * `memory.forget` numa preferência conflitante presa, duas vezes
+ * seguidas, com a linha continuando visível depois). MESMA CLASSE de
+ * bug já visto na Fase 2 (trigger de FTS5 faltando causando registro
+ * fantasma) — só que invertido: aqui o trigger EXISTE mas depende de
+ * um módulo OPCIONAL nem sempre disponível na conexão que o executa.
+ *
+ * Corrigido de duas partes: (1) `memories_vec` NUNCA mais é
+ * sincronizada por trigger SQL — a limpeza vira código JS explícito
+ * dentro de `forget()`, guardado por `if (this.vecAvailable)` como
+ * qualquer outra operação em `memories_vec`, então nunca bloqueia a
+ * remoção real se a extensão não estiver carregada NESTA conexão; (2)
+ * uma migração idempotente (`DROP TRIGGER IF EXISTS memories_vec_ad`,
+ * ver abaixo) roda incondicionalmente na inicialização, mesmo sem
+ * `sqlite-vec` carregado (testado: `DROP TRIGGER` não precisa do
+ * módulo registrado) — limpa o trigger legado de bancos como o de
+ * produção deste projeto, que já tinham a versão antiga do schema.
+ * Uma eventual linha órfã deixada em `memories_vec` (memória apagada
+ * numa conexão sem a extensão carregada) nunca aparece de volta em
+ * busca nenhuma: tanto `findSimilar` quanto `recall` fazem `JOIN
+ * memories m ON m.id = v.rowid` — um INNER JOIN comum, que descarta
+ * silenciosamente qualquer rowid de `memories_vec` sem linha
+ * correspondente em `memories`. Não é preciso garantir 100% de
+ * limpeza pra manter a busca correta, só não deixar a limpeza
+ * bloquear a operação principal.
  */
 export class MemoryStore {
   private db: Database.Database;
@@ -126,18 +171,17 @@ export class MemoryStore {
       END;
     `);
 
+    // Migração idempotente — ver bloco grande de comentário acima da
+    // classe: bancos criados pela primeira versão desta fase têm um
+    // trigger `memories_vec_ad` que causa "no such module: vec0" em
+    // qualquer conexão futura sem `sqlite-vec` carregado. Roda SEMPRE,
+    // mesmo antes de tentar carregar a extensão (testado: `DROP
+    // TRIGGER` não precisa do módulo vec0 registrado nesta conexão).
+    this.db.exec(`DROP TRIGGER IF EXISTS memories_vec_ad;`);
+
     try {
       sqliteVec.load(this.db);
       this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(embedding float[1024])`);
-      // Mesma ideia do trigger de DELETE da FTS5 acima — só que aqui é
-      // condicional: só existe se a extensão carregou (senão a
-      // referência a `memories_vec` no corpo do trigger nem faria
-      // sentido).
-      this.db.exec(`
-        CREATE TRIGGER IF NOT EXISTS memories_vec_ad AFTER DELETE ON memories BEGIN
-          DELETE FROM memories_vec WHERE rowid = old.id;
-        END;
-      `);
       this.vecAvailable = true;
     } catch (err) {
       console.error(
@@ -304,10 +348,30 @@ export class MemoryStore {
     return ranked.map(fromRaw);
   }
 
-  /** `true` se algo foi de fato apagado; `false` se o id não existia. */
+  /**
+   * `true` se algo foi de fato apagado; `false` se o id não existia.
+   *
+   * A limpeza de `memories_vec` acontece aqui em JS, DEPOIS do DELETE
+   * principal já ter sido confirmado — nunca por trigger SQL (ver
+   * comentário grande no topo da classe pro porquê) — e só quando
+   * `vecAvailable` nesta conexão, em `try/catch` que nunca propaga:
+   * mesmo padrão best-effort já usado em `tryEmbed`, mais uma vez
+   * "a operação principal nunca pode ser bloqueada por uma falha na
+   * camada de busca semântica, que é opcional".
+   */
   forget(id: number): boolean {
     const result = this.db.prepare(`DELETE FROM memories WHERE id = ?`).run(id);
-    return result.changes > 0;
+    const removed = result.changes > 0;
+
+    if (removed && this.vecAvailable) {
+      try {
+        this.db.prepare(`DELETE FROM memories_vec WHERE rowid = ?`).run(BigInt(id));
+      } catch (err) {
+        console.error(`[memory] falha ao remover embedding da memória #${id} do índice vetorial (memória já removida normalmente de memories/memories_fts): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return removed;
   }
 
   /**
