@@ -180,7 +180,32 @@ function renderActivity(container, hourlyActivity) {
 }
 
 /**
- * Busca e renderiza os quatro painéis de uma vez. Chamado no carregamento
+ * Fase 7 parte 2 (observabilidade): últimas falhas REAIS de execução
+ * (`status = 'error'` no audit log, preenchido pelos hooks
+ * PostToolUse/PostToolUseFailure — ver @sarah/core). Vazio é o estado
+ * normal/esperado (a maioria das chamadas funciona), não um "sem dado
+ * disponível" — mensagem própria pra deixar isso claro.
+ */
+function renderErrors(container, recentErrors) {
+  container.innerHTML = "";
+  if (!recentErrors || recentErrors.length === 0) {
+    container.appendChild(el("div", "empty-panel", "nenhum erro registrado"));
+    return;
+  }
+  for (const err of recentErrors) {
+    const row = el("div", "error-row");
+    row.appendChild(el("span", "dot"));
+    const content = el("div", "content");
+    content.appendChild(el("div", "tool", err.toolName.replace(/^mcp__/, "").replace(/__/g, " · ")));
+    content.appendChild(el("div", "message", err.errorMessage));
+    row.appendChild(content);
+    row.title = `${new Date(err.timestamp).toLocaleString("pt-BR")} — ${err.errorMessage}`;
+    container.appendChild(row);
+  }
+}
+
+/**
+ * Busca e renderiza os cinco painéis de uma vez. Chamado no carregamento
  * da janela e de novo depois de cada resposta da SARAH (pra números
  * mudarem de acordo com uso real, sem precisar fechar/reabrir).
  */
@@ -191,4 +216,5 @@ export async function refreshDashboard() {
   renderRisk(document.querySelector("#panel-risk .body"), data.riskCounts);
   renderCategories(document.querySelector("#panel-categories .body"), data.categoryCounts);
   renderActivity(document.querySelector("#panel-activity .body"), data.hourlyActivity);
+  renderErrors(document.querySelector("#panel-errors .body"), data.recentErrors);
 }

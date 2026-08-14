@@ -3090,8 +3090,13 @@ e "Próximo passo concreto" abaixo.
    silenciosamente uma contradição — resolvendo as duas notas
    pendentes da Fase 2, sem abrir mão da garantia "preferência vale
    sempre" (nenhum filtro de relevância na injeção do systemPrompt,
-   só um teto consultivo de aviso). Observabilidade e nuance no risco
-   médio continuam pendentes, não fazem parte desta parte 1.
+   só um teto consultivo de aviso). **(Fase 7 parte 2, primeira peça,
+   completa)**: `tool_calls` (`@sarah/audit`) ganhou `status`/
+   `error_message`, preenchidos pelos hooks `PostToolUse`/
+   `PostToolUseFailure` do Agent SDK depois que a tool roda de
+   verdade — não só a decisão do Gateway antes de rodar. Painel
+   "Erros recentes" novo no dashboard. Nuance no risco médio e o
+   resto de observabilidade continuam pendentes.
 8. Novas integrações e expansões.
 
 ## Próximo passo concreto
@@ -4384,3 +4389,109 @@ pra validar o bug de verdade) exige o mesmo cuidado de qualquer
 operação destrutiva contra dado real.
 
 **Fase 7, parte 1 está completa — incluindo esta correção.**
+
+## Decisões e bugs encontrados na Fase 7, parte 2, primeira peça (observabilidade — resultado real da execução)
+
+Objetivo: até aqui, `tool_calls` (`@sarah/audit`) só gravava o que o
+Gateway DECIDIU (`risk`/`decision`) — nunca se a tool, depois de
+aprovada, funcionou de verdade. Uma chamada aprovada que falhasse por
+erro de API/timeout/dado inválido ficava invisível no audit log, mesmo
+tendo sido registrada como "auto-allow"/"confirmed".
+
+### Proposta (aprovada antes de implementar): hooks `PostToolUse`/`PostToolUseFailure`, não o Gateway nem cada tool
+
+`canUseTool` (o Gateway) só decide ANTES da tool rodar — nunca fica
+sabendo se a execução em si funcionou, então não é o lugar certo.
+Instrumentar cada tool individualmente (~20 tools em 8 pacotes)
+duplicaria a mesma lógica em todo canto, contrariando o próprio
+objetivo de observabilidade centralizada. O Agent SDK expõe hooks
+`PostToolUse` (sucesso) e `PostToolUseFailure` (exceção não capturada)
+que disparam automaticamente depois de QUALQUER tool rodar — nativa ou
+MCP, não importa — com `tool_use_id`, `tool_response`/`error` prontos.
+Esse é o ponto único de captura, sem tocar nas tools existentes.
+
+Correlação com a linha que o Gateway já grava na decisão: o SDK já
+passa um `toolUseID` pro terceiro argumento de `canUseTool` (confirmado
+no `sdk.d.ts`, não assumido) — o MESMO id que os hooks devolvem como
+`tool_use_id`. `packages/permissions` passou a repassar esse id pro
+`onDecision`/`@sarah/audit`, que grava numa coluna nova (`tool_use_id`,
+não pedida explicitamente no escopo original — avisado e aprovado antes
+de implementar) só pra `recordResult()` conseguir achar a MESMA linha
+depois, via `UPDATE ... WHERE tool_use_id = ?`.
+
+### Migração idempotente — `PRAGMA table_info`, não `ADD COLUMN IF NOT EXISTS`
+
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` só existe a partir do SQLite
+3.35 (2021); em vez de assumir a versão embutida no `better-sqlite3`
+desta máquina, `AuditLog` confere via `PRAGMA table_info(tool_calls)`
+(sempre disponível) e só adiciona as colunas (`tool_use_id`, `status`,
+`error_message`) que realmente faltam — roda em todo `new AuditLog()`,
+seguro mesmo depois que as colunas já existem. Linhas gravadas antes
+desta fase ficam com `status = NULL` pra sempre: confirmado direto no
+banco de produção, 259 linhas antigas preservadas com `status` vazio,
+não é tratado como erro em lugar nenhum (`recentErrors()` filtra por
+`status = 'error'` especificamente, nunca por `status IS NOT NULL`).
+
+### Achado real testando: `PostToolUseFailure` quase nunca dispara neste projeto — a maioria dos "erros" está disfarçada de sucesso
+
+Primeira validação real (Gmail `get_message` com um `messageId`
+forjado, inexistente — API respondendo 400 de verdade) revelou algo
+que a proposta original não previa: o painel "Erros recentes" continuou
+vazio mesmo com um erro real acontecendo. Investigado direto (log de
+debug temporário comparando os dois lados do hook, removido depois):
+TODA tool deste projeto segue a mesma convenção — `try/catch` interno,
+devolvendo `{ok: false, error: "..."}}` como texto NORMAL do resultado
+(`content: [{type:"text", text: JSON...}]`), nunca lançando exceção nem
+marcando `isError` no `CallToolResult` do MCP. É uma decisão de projeto
+já existente, correta e deliberada (o agente precisa LER o erro pra
+reagir na conversa, ex.: sugerir corrigir o e-mail) — não um bug a
+corrigir nas tools. Consequência: do ponto de vista do protocolo MCP,
+isso É um sucesso — `PostToolUse` dispara, não `PostToolUseFailure`.
+
+Corrigido inspecionando o `tool_response` do PRÓPRIO `PostToolUse` pela
+mesma convenção `{ok: false, error}` já usada em toda tool
+(`extractToolError()`, `packages/core`) — continua um único ponto de
+captura, sem duplicar nada em cada tool, só reconhece o formato que já
+existia. Segundo achado, também via teste real: `tool_response` chega
+como o ARRAY de blocos de conteúdo direto (`[{type:"text",...}]`), não
+`{content: [...]}` como o `CallToolResult` cru do protocolo sugeriria —
+`extractToolError` aceita as duas formas depois de confirmar qual é a
+real, em vez de assumir uma só. `PostToolUseFailure` continua tratado
+(pro raro caso de exceção de verdade não capturada), só deixou de ser
+o caminho principal.
+
+### Dashboard: painel "Erros recentes"
+
+Mesmo padrão visual dos outros quatro cards (`apps/menubar/renderer`),
+adicionado como terceiro painel da coluna direita (janela principal é
+820×640, não a janela de histórico de 380×480 — espaço real sobra).
+Lista vazia é o estado normal/esperado (a maioria das chamadas
+funciona) — mensagem própria ("nenhum erro registrado"), não tratada
+como "sem dado disponível" tipo os outros painéis quando ainda não há
+uso algum.
+
+### Validação — de ponta a ponta, pelo caminho de produção real (`daemon.ts` spawnado, não `createSarahSession()` isolado)
+
+1. **Chamada bem-sucedida real**: "liste meus 2 e-mails mais recentes"
+   → `mcp__sarah-gmail__list_recent_emails` rodou, resposta real da
+   caixa de entrada do usuário devolvida → linha no audit log com
+   `status = 'success'`, `error_message = NULL`.
+2. **Erro real forçado**: `mcp__sarah-gmail__get_message` com um
+   `messageId` forjado, inexistente → Gmail API respondeu 400 de
+   verdade ("Invalid id value") → linha no audit log com
+   `status = 'error'` e a mensagem REAL da API (não uma mensagem
+   genérica inventada) em `error_message`.
+3. **Painel do dashboard**: `dashboard().recentErrors` (mesma chamada
+   que `apps/menubar` usa) devolveu exatamente essa falha, com
+   `toolName`/`errorMessage` corretos — confirmado o dado chegando de
+   ponta a ponta até onde o painel novo consome.
+4. **Histórico preservado**: 259 linhas gravadas antes desta fase
+   continuam com `status = NULL` no banco de produção real, sem
+   nenhuma perda nem erro na migração.
+
+Limpo depois da validação: um fato de teste próprio salvo em
+`memory.remember` durante a investigação da correlação
+(`tool_use_id`) — nenhum dado real do usuário tocado, mesma disciplina
+das correções anteriores desta fase.
+
+**Fase 7, parte 2 (primeira peça — resultado real da execução) está completa.**

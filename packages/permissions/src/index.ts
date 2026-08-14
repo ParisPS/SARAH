@@ -191,6 +191,16 @@ export interface DecisionEntry {
   input: unknown;
   risk: RiskLevel;
   decision: Decision;
+  /**
+   * Fase 7 parte 2: `toolUseID` que o próprio Agent SDK já passa pro
+   * `canUseTool` (terceiro argumento, campo `toolUseID` — confirmado no
+   * `sdk.d.ts`, não inventado) — repassado pra `@sarah/audit` conseguir
+   * casar esta decisão com o RESULTADO da execução, capturado depois
+   * por um hook separado (`PostToolUse`/`PostToolUseFailure`, ver
+   * `packages/core`). Este pacote não sabe nada sobre hooks nem sobre
+   * o schema do audit log — só repassa o id que já tinha em mãos.
+   */
+  toolUseId: string;
 }
 
 export interface GatewayOptions {
@@ -209,11 +219,12 @@ export interface GatewayOptions {
  * tool pode rodar.
  */
 export function createGateway(options: GatewayOptions): CanUseTool {
-  return async (toolName, toolInput) => {
+  return async (toolName, toolInput, callOptions) => {
     const risk = classifyRisk(toolName);
+    const toolUseId = callOptions.toolUseID;
 
     if (risk === "low") {
-      options.onDecision?.({ toolName, input: toolInput, risk, decision: "auto-allow" });
+      options.onDecision?.({ toolName, input: toolInput, risk, decision: "auto-allow", toolUseId });
       return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
     }
 
@@ -235,6 +246,7 @@ export function createGateway(options: GatewayOptions): CanUseTool {
       input: toolInput,
       risk,
       decision: approved ? "confirmed" : "denied",
+      toolUseId,
     });
 
     if (approved) {

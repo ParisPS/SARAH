@@ -1,4 +1,4 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, type HookInput, type HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGateway, classifyRisk, type ConfirmFn, type RiskLevel } from "@sarah/permissions";
@@ -406,11 +406,24 @@ export interface IntegrationStatus {
   detail: string;
 }
 
+/**
+ * Uma falha REAL de execução, pro painel "Erros recentes" do dashboard
+ * (Fase 7 parte 2) — nunca uma decisão do Gateway (isso já é o painel
+ * de risco/histórico), só chamadas que rodaram e falharam de verdade.
+ */
+export interface RecentError {
+  id: number;
+  timestamp: string;
+  toolName: string;
+  errorMessage: string;
+}
+
 export interface DashboardData {
   integrations: IntegrationStatus[];
   riskCounts: { low: number; high: number };
   categoryCounts: Array<{ server: string; count: number }>;
   hourlyActivity: Array<{ hourStart: string; count: number }>;
+  recentErrors: RecentError[];
 }
 
 export interface SarahSession {
@@ -450,6 +463,54 @@ export interface SarahSession {
 }
 
 /**
+ * Extrai a mensagem de erro do `tool_response` de um hook `PostToolUse`
+ * — que, por si só, só significa "a tool rodou e devolveu uma resposta
+ * sem lançar exceção", NÃO "deu certo". ACHADO REAL testando esta fase
+ * com um erro de verdade (Gmail `get_message` com `messageId` inválido,
+ * API respondendo 400): toda tool deste projeto segue a MESMA convenção
+ * — `try/catch` interno, devolvendo `{ok: false, error: "..."}}` como
+ * texto NORMAL do resultado, nunca lançando nem marcando `isError` no
+ * `CallToolResult` do MCP (decisão de projeto já existente, não desta
+ * fase — é assim que o AGENTE consegue ler e reagir ao erro dentro da
+ * própria conversa, em vez da exceção estourar a chamada). Consequência
+ * direta: `PostToolUseFailure` só dispara pra uma exceção NÃO capturada
+ * — praticamente nunca, já que toda tool captura a própria. Sem isto
+ * aqui, "Erros recentes" ficaria vazio na prática, mesmo com erros reais
+ * acontecendo o tempo todo — testado e confirmado ANTES desta correção
+ * (ver docs/architecture.md). Nunca lança: qualquer formato inesperado
+ * (resposta em prosa normal, tool nativa não-MCP, JSON sem o campo `ok`)
+ * só devolve `null` — tratado como sucesso, o padrão mais seguro.
+ */
+function extractToolError(response: unknown): string | null {
+  if (!response || typeof response !== "object") return null;
+  // ACHADO REAL testando (ver comentário acima): o `tool_response` de
+  // uma tool MCP chega aqui já como o ARRAY de blocos de conteúdo
+  // (`[{type:"text",text:"..."}]`) — não `{content: [...]}` como o
+  // `CallToolResult` cru do protocolo MCP sugeriria. Aceita as duas
+  // formas em vez de assumir só uma, sem checar de verdade.
+  const content = Array.isArray(response) ? response : (response as { content?: unknown }).content;
+  if (!Array.isArray(content)) return null;
+  for (const block of content) {
+    if (!block || typeof block !== "object" || (block as { type?: unknown }).type !== "text") continue;
+    const text = (block as { text?: unknown }).text;
+    if (typeof text !== "string") continue;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && (parsed as { ok?: unknown }).ok === false) {
+        const error = (parsed as { error?: unknown }).error;
+        return typeof error === "string" ? error : JSON.stringify(parsed);
+      }
+    } catch {
+      // Bloco de texto não é JSON (resposta em prosa normal, ex.: uma
+      // tool nativa do SDK) — não segue a convenção `{ok, error}` deste
+      // projeto, não é um sinal de erro. Continua olhando os outros
+      // blocos antes de concluir que não há erro nenhum.
+    }
+  }
+  return null;
+}
+
+/**
  * Fábrica da sessão da SARAH: monta Gateway, audit log, memória
  * persistente e o registro de tools MCP UMA VEZ, e devolve um objeto
  * reutilizável pra fazer quantos pedidos forem necessários. Cada app
@@ -464,6 +525,36 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
     confirm: options.confirm,
   });
   const { server: memoryServer, store: memoryStore } = createMemoryServer(MEMORY_DB_PATH);
+
+  /**
+   * Fase 7 parte 2 (observabilidade): ponto ÚNICO de captura do
+   * RESULTADO real da execução de cada tool — nunca duplicado em cada
+   * tool individual. `canUseTool` (o Gateway) só decide ANTES da tool
+   * rodar; ele nunca fica sabendo se a execução em si funcionou. Os
+   * hooks `PostToolUse`/`PostToolUseFailure` do Agent SDK disparam
+   * DEPOIS de QUALQUER tool rodar (nativa, MCP, não importa) — exatamente
+   * o ponto certo, e o único lugar que dispensa mexer nas ~20 tools já
+   * existentes. Casam com a linha que o Gateway já gravou em
+   * `audit.record()` pelo mesmo `tool_use_id` (`toolUseID`, que
+   * `canUseTool` já recebe do SDK — ver `packages/permissions`).
+   *
+   * `PostToolUse` = sucesso (`tool_response` presente, sem uso aqui —
+   * só o FATO de ter chegado por este hook, e não pelo `Failure`, já
+   * basta). `PostToolUseFailure` = erro de verdade (exceção da tool,
+   * timeout, API externa fora do ar) — `error` vem pronto, em texto.
+   * Os dois devolvem `{ continue: true }`, o mínimo `HookJSONOutput`
+   * válido: este hook só OBSERVA, nunca decide bloquear/alterar nada
+   * do fluxo da conversa.
+   */
+  async function onPostToolUse(input: HookInput): Promise<HookJSONOutput> {
+    if (input.hook_event_name === "PostToolUse") {
+      const errorMessage = extractToolError(input.tool_response);
+      audit.recordResult(input.tool_use_id, errorMessage ? "error" : "success", errorMessage);
+    } else if (input.hook_event_name === "PostToolUseFailure") {
+      audit.recordResult(input.tool_use_id, "error", input.error);
+    }
+    return { continue: true };
+  }
 
   // Session ID da conversa atual, capturado da mensagem system/init da
   // primeira chamada a query() — reusado via `resume` nas chamadas
@@ -517,6 +608,10 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
         },
         disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
         canUseTool,
+        hooks: {
+          PostToolUse: [{ hooks: [onPostToolUse] }],
+          PostToolUseFailure: [{ hooks: [onPostToolUse] }],
+        },
         ...(sessionId ? { resume: sessionId } : {}),
         systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPromptAppend },
       },
@@ -570,11 +665,23 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
       return { id, label, configured: false, detail: result.reason instanceof Error ? result.reason.message : String(result.reason) };
     });
 
+    const recentErrors: RecentError[] = audit.recentErrors(5).map((row) => ({
+      id: row.id,
+      timestamp: row.timestamp,
+      toolName: row.toolName,
+      // `recentErrors()` já filtra por `status = 'error'`, então
+      // `errorMessage` é sempre string aqui — o `?? ""` é só pra
+      // satisfazer o tipo (`string | null` no schema) sem afirmar
+      // um `!` não verificado.
+      errorMessage: row.errorMessage ?? "",
+    }));
+
     return {
       integrations,
       riskCounts: audit.riskCounts(),
       categoryCounts: audit.countByServer(),
       hourlyActivity: audit.hourlyBuckets(24),
+      recentErrors,
     };
   }
 

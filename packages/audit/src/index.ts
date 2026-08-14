@@ -4,17 +4,60 @@ import { dirname } from "node:path";
 
 export type RiskLevel = "low" | "high";
 export type Decision = "auto-allow" | "confirmed" | "denied";
+/** Ver `recordResult` — `null` até o hook PostToolUse/PostToolUseFailure chegar (ou nunca, em linhas antigas). */
+export type CallStatus = "success" | "error";
 
 export interface AuditEntry {
   toolName: string;
   input: unknown;
   risk: RiskLevel;
   decision: Decision;
+  /**
+   * Fase 7 parte 2 (observabilidade): id da chamada de tool dentro da
+   * mensagem do modelo (`toolUseID`, já exposto por `canUseTool` no
+   * Agent SDK) — grava aqui na hora da DECISÃO do Gateway (antes da
+   * tool rodar) só pra `recordResult` conseguir achar a MESMA linha
+   * depois, quando o hook de pós-execução chegar com o resultado.
+   * Opcional só por tipagem defensiva (chamadas que não passam pelo
+   * `canUseTool`, se algum dia existirem, não teriam este id) — na
+   * prática o Gateway sempre fornece.
+   */
+  toolUseId?: string;
 }
 
 export interface AuditRow extends AuditEntry {
   id: number;
   timestamp: string;
+  /** `null` = ainda não rodou (hook não chegou) ou é uma linha anterior a esta fase. */
+  status: CallStatus | null;
+  /** Mensagem real do erro, só quando `status === "error"`. */
+  errorMessage: string | null;
+}
+
+interface RawRow {
+  id: number;
+  timestamp: string;
+  tool_name: string;
+  input_json: string;
+  risk: RiskLevel;
+  decision: Decision;
+  tool_use_id: string | null;
+  status: CallStatus | null;
+  error_message: string | null;
+}
+
+function fromRaw(r: RawRow): AuditRow {
+  return {
+    id: r.id,
+    timestamp: r.timestamp,
+    toolName: r.tool_name,
+    input: JSON.parse(r.input_json),
+    risk: r.risk,
+    decision: r.decision,
+    toolUseId: r.tool_use_id ?? undefined,
+    status: r.status,
+    errorMessage: r.error_message,
+  };
 }
 
 /**
@@ -22,10 +65,18 @@ export interface AuditRow extends AuditEntry {
  * (auto-allow, confirmado ou negado) passa por aqui — é o que responde
  * a perguntas do tipo "SARAH, o que você fez hoje?" nas próximas fases.
  *
- * Fase 0: registra só a DECISÃO. Registrar também o RESULTADO da
- * execução (sucesso/erro) fica pra quando ligarmos um hook de
- * PostToolUse — deixei isso de fora agora porque eu não conseguiria
- * validar o formato exato do payload sem rodar o SDK de verdade.
+ * Fase 0: registrava só a DECISÃO (o que o Gateway decidiu ANTES da
+ * tool rodar) — uma chamada aprovada que depois falhasse por erro de
+ * API/timeout/dado inválido ficava invisível aqui, mesmo tendo sido
+ * registrada. Fase 7 parte 2: `status`/`error_message` capturam o
+ * RESULTADO real da execução, preenchidos por `recordResult` — chamado
+ * pelos hooks `PostToolUse`/`PostToolUseFailure` do Agent SDK em
+ * `packages/core` (ver comentário lá pro porquê esse é o ponto certo,
+ * em vez do Gateway ou de cada tool individual). Migração idempotente
+ * abaixo: bancos já existentes (como o de produção deste projeto)
+ * ganham as colunas novas sem perder nenhuma linha; linhas gravadas
+ * antes desta fase ficam com `status = NULL` pra sempre — não é um erro,
+ * é "a execução não foi observada", diferente de `status = 'error'`.
  */
 export class AuditLog {
   private db: Database.Database;
@@ -43,43 +94,70 @@ export class AuditLog {
         decision TEXT NOT NULL
       )
     `);
+
+    // Migração idempotente — `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
+    // existe só a partir do SQLite 3.35 (2021); em vez de assumir a
+    // versão embutida no `better-sqlite3` desta máquina, confere via
+    // `PRAGMA table_info` (sempre disponível) e só adiciona o que
+    // realmente falta — seguro rodar em todo `new AuditLog()`, mesmo
+    // depois que as colunas já existirem.
+    const columns = new Set((this.db.prepare(`PRAGMA table_info(tool_calls)`).all() as Array<{ name: string }>).map((c) => c.name));
+    if (!columns.has("tool_use_id")) this.db.exec(`ALTER TABLE tool_calls ADD COLUMN tool_use_id TEXT`);
+    if (!columns.has("status")) this.db.exec(`ALTER TABLE tool_calls ADD COLUMN status TEXT`);
+    if (!columns.has("error_message")) this.db.exec(`ALTER TABLE tool_calls ADD COLUMN error_message TEXT`);
   }
 
   record(entry: AuditEntry): void {
     this.db
       .prepare(
-        `INSERT INTO tool_calls (timestamp, tool_name, input_json, risk, decision)
-         VALUES (?, ?, ?, ?, ?)`
+        `INSERT INTO tool_calls (timestamp, tool_name, input_json, risk, decision, tool_use_id)
+         VALUES (?, ?, ?, ?, ?, ?)`
       )
       .run(
         new Date().toISOString(),
         entry.toolName,
         JSON.stringify(entry.input),
         entry.risk,
-        entry.decision
+        entry.decision,
+        entry.toolUseId ?? null
       );
   }
 
-  recent(limit = 20): AuditRow[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM tool_calls ORDER BY id DESC LIMIT ?`)
-      .all(limit) as Array<{
-        id: number;
-        timestamp: string;
-        tool_name: string;
-        input_json: string;
-        risk: RiskLevel;
-        decision: Decision;
-      }>;
+  /**
+   * Preenche o RESULTADO real de uma chamada já registrada por
+   * `record()`, casando pelo mesmo `toolUseId` — chamado pelos hooks
+   * `PostToolUse` (status "success") e `PostToolUseFailure` (status
+   * "error", com a mensagem real) em `packages/core`. Se nenhuma linha
+   * bater (ex.: uma tool que por algum motivo não passou por
+   * `canUseTool`), só loga um aviso — nunca lança, um hook de
+   * observabilidade não pode derrubar a conversa por causa disso.
+   */
+  recordResult(toolUseId: string, status: CallStatus, errorMessage: string | null): void {
+    const result = this.db
+      .prepare(`UPDATE tool_calls SET status = ?, error_message = ? WHERE tool_use_id = ?`)
+      .run(status, errorMessage, toolUseId);
+    if (result.changes === 0) {
+      console.error(`[audit] recordResult: nenhuma linha encontrada pra tool_use_id=${toolUseId} (status=${status}) — resultado descartado, sem linha pra atualizar.`);
+    }
+  }
 
-    return rows.map((r) => ({
-      id: r.id,
-      timestamp: r.timestamp,
-      toolName: r.tool_name,
-      input: JSON.parse(r.input_json),
-      risk: r.risk,
-      decision: r.decision,
-    }));
+  recent(limit = 20): AuditRow[] {
+    const rows = this.db.prepare(`SELECT * FROM tool_calls ORDER BY id DESC LIMIT ?`).all(limit) as RawRow[];
+    return rows.map(fromRaw);
+  }
+
+  /**
+   * Últimas `limit` chamadas que de fato FALHARAM na execução
+   * (`status = 'error'`) — pro painel "Erros recentes" do dashboard
+   * (Fase 7 parte 2). Vazio é o caso comum/esperado (a maioria das
+   * chamadas funciona); o painel trata isso como estado normal, não
+   * como ausência de dado.
+   */
+  recentErrors(limit = 10): AuditRow[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM tool_calls WHERE status = 'error' ORDER BY id DESC LIMIT ?`)
+      .all(limit) as RawRow[];
+    return rows.map(fromRaw);
   }
 
   /**

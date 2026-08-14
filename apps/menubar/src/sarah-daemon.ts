@@ -41,11 +41,21 @@ export interface IntegrationStatus {
   configured: boolean;
   detail: string;
 }
+/** Mesma forma de `RecentError` (@sarah/core) — copiada pelo mesmo motivo acima. */
+export interface RecentError {
+  id: number;
+  timestamp: string;
+  toolName: string;
+  errorMessage: string;
+}
+
 export interface DashboardData {
   integrations: IntegrationStatus[];
   riskCounts: { low: number; high: number };
   categoryCounts: Array<{ server: string; count: number }>;
   hourlyActivity: Array<{ hourStart: string; count: number }>;
+  /** Fase 7 parte 2: últimas falhas REAIS de execução (nunca decisões do Gateway). */
+  recentErrors: RecentError[];
 }
 
 export interface SarahDaemon {
