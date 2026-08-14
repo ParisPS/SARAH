@@ -66,3 +66,23 @@ antigo ainda rodando) — vale prevenir de se repetir.
 macOS, nunca em arquivo (ver `packages/gmail/src/keychain.ts`). Antes
 de qualquer commit que toque em configuração/env, rode `git status`
 e confira a lista antes de `git add`.
+
+## Nunca tirar screenshot de tela inteira pra verificação/debug automatizado
+
+`screencapture` (ou qualquer captura da tela inteira) NUNCA deve ser
+usado como forma de verificar/debugar algo neste projeto, mesmo
+parecendo o jeito mais direto de "ver" um resultado visual (ex.: um
+dialog nativo do Electron). A tela do usuário pode ter QUALQUER outra
+janela aberta no momento — editor com `.env` visível, terminal com
+segredo impresso, outra conversa — e uma captura de tela inteira não
+distingue isso do que se está tentando verificar. Incidente real
+nesta fase (Fase 7 parte 3): uma tentativa de comparar visualmente o
+dialog de risco médio vs. alto risco via `screencapture` acabou
+capturando o VS Code do usuário com o `.env` aberto, credenciais reais
+(Notion, Google, Voyage) visíveis em texto puro na captura — a imagem
+foi apagada assim que percebido, mas o vazamento já tinha acontecido
+dentro da conversa. A partir de agora: pra qualquer verificação que
+dependa de VER algo na tela (dialog nativo, janela, o resultado visual
+de uma mudança), a resposta certa é pedir pro USUÁRIO olhar e
+descrever/confirmar — nunca capturar a tela sozinho, nem de uma janela
+específica, nem da tela inteira.

@@ -3081,7 +3081,9 @@ e "Próximo passo concreto" abaixo.
    **Deploy de sites continua FORA do escopo**, decisão já tomada
    antes — usuário resolve manualmente, não retomado nesta fase.
 7. Memória semântica (embeddings via Voyage AI) + observabilidade +
-   nuance no risco médio. **(Fase 7 parte 1 completa)**: `memory.recall`
+   nuance no risco médio. **Fase 7 está completa (partes 1-3)** — ver
+   "## Fase 7 — completa" mais abaixo pro resumo fechado e as
+   pendências registradas. **(Fase 7 parte 1 completa)**: `memory.recall`
    funde busca por palavra-chave (FTS5) com busca por similaridade
    semântica (`sqlite-vec` + embeddings da Voyage AI, `voyage-4-lite`)
    via Reciprocal Rank Fusion; `memory.remember` detecta preferência/
@@ -4785,3 +4787,138 @@ tools de baixo risco do sandbox (`write_file`, `git_commit`, etc.) —
 pedido explícito era "primeira tool, não todas de uma vez"; uma
 eventual segunda passada fica pra decisão futura, tool por tool, com
 o mesmo cuidado.
+
+## Achado real (segunda ocorrência): screenshot de tela inteira expôs credenciais de novo — virou regra permanente no CLAUDE.md
+
+Durante a validação visual da apresentação proporcional de risco médio
+vs. alto risco (Fase 7 parte 3, seção acima), tentei confirmar EU
+MESMO a diferença entre o dialog nativo `type: "warning"` (alto risco)
+e `type: "info"` (médio risco) do Electron — sem acesso a clique real
+num dialog nativo, tentei uma abordagem tecnicamente elaborada
+(anexar ao processo principal do Electron via protocolo de inspeção
+do Node, disparar `dialog.showMessageBox` diretamente) e, pra
+confirmar visualmente o resultado, tirei um `screencapture` de tela
+cheia. O dialog não chegou a renderizar de verdade (o app nunca tinha
+recebido foco de janela na minha chamada isolada, diferente do fluxo
+real de uso) — e a captura de tela, em vez de mostrar o dialog,
+capturou o VS Code do usuário com o arquivo `.env` **aberto e visível**,
+com credenciais reais em texto puro (Notion, Google, Voyage). Apagada
+a imagem assim que percebido, mas o conteúdo já tinha passado pela
+conversa.
+
+**Isto já tinha acontecido antes, na Fase 5 parte 4** (ver "Quase-
+incidente durante esta validação: segredo exposto num screenshot"
+mais acima) — um Personal Access Token do GitHub capturado do mesmo
+jeito, também por foco de janela imprevisível. Daquela vez, a decisão
+("parar de tentar screenshot automatizado") ficou registrada só aqui,
+em prosa narrativa — não virou uma instrução operacional em lugar
+nenhum que uma sessão FUTURA fosse necessariamente reler antes de
+agir. Consequência direta: a mesma classe de erro se repetiu, com
+outro segredo, duas fases depois.
+
+**Correção desta vez**: a regra virou uma seção permanente no
+`CLAUDE.md` deste repositório ("Nunca tirar screenshot de tela inteira
+pra verificação/debug automatizado") — carregado no início de TODA
+sessão futura neste projeto, não dependente de alguém lembrar de picar
+esta página específica do `docs/architecture.md`. Pra qualquer
+verificação visual futura (dialog nativo, janela, resultado de UI), a
+resposta correta é pedir pro usuário olhar e confirmar — nunca
+capturar a tela, nem de uma janela específica, nem da tela inteira,
+sozinho.
+
+## Fase 7 — completa
+
+Três partes, cada uma com sua própria seção detalhada mais acima
+(decisões, achados reais e validação de ponta a ponta) — este é só o
+resumo fechado.
+
+**Parte 1 (memória semântica)**: `memory.recall` funde busca por
+palavra-chave (FTS5) com similaridade semântica (embeddings da Voyage
+AI, `voyage-4-lite`, armazenados via `sqlite-vec`) por Reciprocal Rank
+Fusion. `memory.remember` detecta preferência/fato semanticamente
+parecido da MESMA categoria ANTES de gravar e pede decisão do usuário
+(substituir ou manter as duas) em vez de empilhar contradição
+silenciosa — resolvendo as duas notas pendentes da Fase 2 sem abrir
+mão da garantia "preferência sempre injetada" (nenhum filtro de
+relevância, só um teto consultivo de aviso). Sem `VOYAGE_API_KEY`
+configurada, degrada pra busca só por palavra-chave, sem erro nenhum.
+**Bug real corrigido pós-entrega**: `memories_vec` era sincronizada
+por um TRIGGER SQL de DELETE, mas um trigger fica gravado no esquema
+do ARQUIVO `.db` pra sempre, enquanto `sqlite-vec` carregado é uma
+garantia POR CONEXÃO — uma conexão do daemon sem a extensão carregada
+ainda tentava executar o trigger legado, derrubando `memory.forget`
+inteiro com `no such module: vec0` (falha silenciosa, nem `memories`
+nem `memories_fts` chegavam a ser apagados). Corrigido movendo a
+limpeza de `memories_vec` pra código JS best-effort, guardado por
+conexão, mais uma migração que remove o trigger legado de bancos já
+existentes.
+
+**Parte 2 (observabilidade)**: `tool_calls` (`@sarah/audit`) ganhou
+`status`/`error_message`, preenchidos pelos hooks `PostToolUse`/
+`PostToolUseFailure` do Agent SDK depois que a tool roda de
+verdade — não só a decisão do Gateway antes de rodar (migração
+idempotente, linhas antigas ficam com `status NULL`, nunca tratadas
+como erro). Cobre os dois formatos reais de falha deste projeto: o
+erro "educado" (`{ok:false, error}` como resposta normal, convenção
+usada por TODA tool aqui — o caminho comum, capturado inspecionando o
+`tool_response` do próprio `PostToolUse`) e a exceção não capturada de
+verdade (rara, capturada por `PostToolUseFailure`). Painel "Erros
+recentes" novo no dashboard. `AuditLog.repeatedFailures()` detecta 3
+falhas CONSECUTIVAS da mesma tool (nunca acumuladas ao longo do
+tempo) e alerta nos dois canais: banner visual no dashboard (que já se
+reconstrói sozinho a cada resposta) e a SARAH mencionando
+proativamente no início da próxima resposta de conversa — uma vez por
+sequência nova, nunca repetindo a cada turno enquanto a mesma falha
+continuar.
+
+**Parte 3 (nuance no risco médio, primeira tool)**: `code.run_command`
+vira risco MÉDIO — classificação determinística por CONTEÚDO do
+comando, avaliada do zero em cada chamada, nunca por histórico/
+confiança acumulada (o cenário que motivou o pedido original: um `rm`
+real não pode se esconder atrás de um histórico bom de chamadas
+anteriores). Uma allowlist explícita de comandos de leitura/build/
+teste (`ls`, `cat`, `pwd`, `npm test`, `npm run build`, `npm run dev`,
+`git status`, `git log`, `git diff`) roda direto; qualquer coisa fora
+dela confirma, com apresentação proporcionalmente mais leve que alto
+risco (sem o texto "ALTO RISCO", `type: "info"` em vez de `"warning"`
+no dialog nativo do Electron). **Achado de segurança real**: a
+allowlist sozinha teria uma brecha por PREFIXO — `ls; rm -rf .`
+começa com `ls`, casaria com a allowlist e rodaria o `rm` sem
+confirmação, o mesmo cenário do "`rm` escondido", só atrás de prefixo
+em vez de histórico. Corrigido com uma checagem de metacaracteres de
+shell (`;`, `&&`, `||`, `|`, backtick, `$(...)`, `>`, `<`, quebra de
+linha) que tira qualquer comando encadeado da allowlist inteira,
+mesmo que o resto pareça inofensivo. `git push`/envio de e-mail/
+`forget` de memória continuam SEMPRE alto risco, sem allowlist
+nenhuma — essa é a fronteira real entre médio e alto. Extensão da
+mesma nuance pras OUTRAS tools de baixo risco do sandbox fica de fora
+de propósito ("primeira tool, não todas de uma vez").
+
+**Achado de processo, não de código, registrado como regra permanente
+no `CLAUDE.md`**: tentar verificar visualmente o resultado desta fase
+via `screencapture` de tela inteira expôs credenciais reais do usuário
+pela SEGUNDA vez neste projeto (a primeira foi na Fase 5 parte 4) —
+ver seção "Achado real (segunda ocorrência)" logo acima. A partir de
+agora essa verificação nunca é feita sozinha, sempre pedida ao
+usuário.
+
+**Pendências registradas, não escondidas** (nenhuma delas bloqueia
+considerar a Fase 7 fechada — são continuações explícitas, não
+lacunas silenciosas):
+
+- **Rastreamento de expiração de credencial**: o token do Gmail expira
+  a cada ~7 dias (app OAuth em modo "Testing", decisão já registrada)
+  e o PAT do GitHub não tem data de expiração rastreada — hoje só se
+  descobre que expirou quando uma chamada falha de verdade. Ficaria
+  natural como uma extensão da Parte 2 (observabilidade), mas não foi
+  iniciada nesta fase.
+- **Extensão da nuance de risco médio pra outras tools**: `run_command`
+  foi a primeira e única tool médio-risco desta fase, de propósito.
+  Outras tools do sandbox (`write_file`, `git_commit`, etc.) continuam
+  baixo risco — uma eventual segunda passada de nuance fica pra
+  decisão futura, tool por tool, com o mesmo cuidado desta.
+- **Decisão sobre upgrade do plano do Figma**: dois projetos reais do
+  usuário (Fase 5 parte 6/7) continuam parados esperando decisão sobre
+  o plano Professional do Figma — rate limit do plano gratuito
+  (~6 chamadas/mês) segue bloqueando uso repetido. Não decidido nesta
+  fase, não escondido: registrado aqui e no README.

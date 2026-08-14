@@ -1,4 +1,4 @@
-# SARAH — Fases 0-6 completas, Fase 7 parte 1 (Figma com pendência de cota)
+# SARAH — Fases 0-7 completas (Figma, Fase 5, com pendência de cota)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -268,7 +268,9 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   existente do usuário, cada um passando por branch → commit → push
   (confirmado) → PR aparecendo no GitHub, sem merge automático.
 
-## Fase 7 — memória semântica (parte 1: embeddings)
+## Fase 7 — memória semântica, observabilidade e nuance no risco médio (completa)
+
+### Parte 1 — memória semântica
 
 - **`memory.recall` combina palavra-chave (FTS5) com similaridade
   SEMÂNTICA** (embeddings da Voyage AI, modelo `voyage-4-lite`,
@@ -297,24 +299,90 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
 - **Se `VOYAGE_API_KEY` não estiver configurada** (ver `.env.example`),
   a memória continua funcionando NORMALMENTE — só palavra-chave via
   FTS5, exatamente como antes desta fase, sem erro nenhum visível.
+- **Bug real corrigido pós-entrega**: `memory.forget` podia falhar
+  silenciosamente (`no such module: vec0`) porque a limpeza do índice
+  vetorial dependia de um TRIGGER SQL gravado no esquema do arquivo
+  `.db` pra sempre, enquanto a extensão `sqlite-vec` carregada é uma
+  garantia só POR CONEXÃO — uma conexão do daemon sem a extensão ainda
+  tentava rodar o trigger legado e derrubava o apagamento inteiro (nem
+  `memories` nem `memories_fts` chegavam a ser apagados). Corrigido
+  movendo a limpeza pra código best-effort, sem depender de trigger
+  nenhum.
 - **Validado:** calibração do limiar de similaridade com embeddings
-  REAIS (não intuição) usando o próprio par de exemplo do pedido;
-  fluxo completo via o agente real (`memory.remember` → conflito →
-  `AskUserQuestion` → Gateway pede confirmação → sem seletor visual
-  capturado, o agente pergunta em texto no lugar de decidir sozinho);
-  busca semântica encontrando memórias reais do usuário com uma
-  pergunta em palavras diferentes das guardadas — ver
-  `docs/architecture.md` pros achados reais (`sqlite-vec` exige rowid
-  `BigInt`, cota reduzida da Voyage sem cartão cadastrado, bug real de
-  backfill sem throttle competindo pela cota).
+  REAIS (não intuição); fluxo completo via o agente real
+  (`memory.remember` → conflito → `AskUserQuestion` → Gateway pede
+  confirmação); busca semântica encontrando memórias reais do usuário
+  com uma pergunta em palavras diferentes das guardadas; substituição
+  real de uma preferência conflitante, com o bug do trigger reproduzido
+  e corrigido rodando o caminho de produção de verdade (não só a
+  sessão isolada) — ver `docs/architecture.md` pros achados completos.
+
+### Parte 2 — observabilidade
+
+- **Resultado REAL da execução, não só a decisão do Gateway**:
+  `tool_calls` (`@sarah/audit`) ganhou `status`/`error_message`,
+  preenchidos pelos hooks `PostToolUse`/`PostToolUseFailure` do Agent
+  SDK depois que a tool roda de verdade. Cobre os dois formatos reais
+  de falha: o erro "educado" (`{ok:false, error}` como resposta normal
+  — a convenção que toda tool deste projeto já usa) e a exceção não
+  capturada de verdade (rara). Painel "Erros recentes" novo no
+  dashboard.
+- **Alertas proativos de falha repetida**: 3 falhas CONSECUTIVAS da
+  mesma tool (nunca acumuladas ao longo do tempo) disparam um aviso
+  visual no dashboard E a SARAH mencionando isso no início da próxima
+  resposta de conversa — uma vez por sequência nova, sem repetir a
+  cada turno.
+- **Validado:** um erro real forçado (Gmail com id inexistente, Figma
+  batendo no rate limit real) aparece com `status=error` e a mensagem
+  real da API; uma chamada bem-sucedida continua `status=success`;
+  3 falhas seguidas do Figma dispararam o alerta certo, sem repetir
+  nos turnos seguintes, e sem disparar à toa pra uma tool saudável.
+
+### Parte 3 — nuance no risco médio (primeira tool: `code.run_command`)
+
+- **`code.run_command` vira risco MÉDIO** — classificação
+  determinística por CONTEÚDO do comando, avaliada do zero em CADA
+  chamada, nunca por histórico/confiança acumulada (um `rm` real não
+  pode se esconder atrás de um histórico bom de chamadas anteriores).
+  Uma allowlist de comandos de leitura/build/teste (`ls`, `cat`,
+  `pwd`, `npm test`, `npm run build`, `npm run dev`, `git status`,
+  `git log`, `git diff`) roda direto; qualquer coisa fora dela
+  confirma, com apresentação proporcionalmente mais leve que alto
+  risco (sem o aviso de "ALTO RISCO").
+- **Achado de segurança real**: a allowlist sozinha tinha uma brecha
+  por PREFIXO (`ls; rm -rf .` começa com `ls`) — corrigido bloqueando
+  qualquer comando com metacaracteres de encadeamento/redirecionamento
+  de shell (`;`, `&&`, `||`, `|`, backtick, `$(...)`, `>`, `<`).
+- **`git push`, envio de e-mail e `forget` de memória continuam SEMPRE
+  alto risco**, sem allowlist nenhuma — essa é a fronteira real entre
+  médio e alto risco, não o nome do nível.
+- **Validado:** `git status` (allowlisted) rodou direto, sem pedir
+  nada; um `rm` de teste (fora da allowlist) pediu confirmação com
+  apresentação diferente da de alto risco — conferido no audit log com
+  `risk=medium` e a decisão certa nos dois casos.
+
+**Achado de processo, registrado como regra permanente pra qualquer
+sessão do Claude Code neste repo (`CLAUDE.md`)**: tentar verificar
+visualmente um resultado desta fase via screenshot de tela inteira
+expôs credenciais reais do usuário — pela SEGUNDA vez neste projeto.
+A partir de agora essa verificação nunca é feita sozinha, sempre pedida
+ao usuário olhar (ver `docs/architecture.md` pro incidente completo).
+
+**Pendências registradas, não escondidas**: rastreamento de expiração
+de credencial (token do Gmail expira a cada ~7 dias, PAT do GitHub sem
+expiração rastreada — hoje só se descobre quando uma chamada falha de
+verdade); extensão da nuance de risco médio pras outras tools do
+sandbox (`write_file`, `git_commit`, etc. continuam baixo risco, de
+propósito — "primeira tool, não todas de uma vez"); decisão sobre
+upgrade do plano do Figma (Fase 5) continua em aberto.
 
 **O que este código NÃO faz ainda (de propósito):** merge de Pull
 Request (sempre manual, pelo GitHub — decisão deliberada da Fase 6,
-não uma lacuna),
-deploy público de sites (só preview local dentro do sandbox), imagem
-realista/vídeo (Fase 5, decisões conscientes de não seguir por
-enquanto) e observabilidade/nuance no risco médio (Fase 7, partes
-futuras) — ver o roadmap completo em `docs/architecture.md`.
+não uma lacuna), deploy público de sites (só preview local dentro do
+sandbox), imagem realista/vídeo (Fase 5, decisões conscientes de não
+seguir por enquanto), rastreamento de expiração de credencial e nuance
+de risco médio pras tools além de `run_command` (Fase 7, pendências
+registradas acima) — ver o roadmap completo em `docs/architecture.md`.
 
 ## Setup
 
@@ -438,17 +506,36 @@ confirmação (**alto risco**, mostra projeto/título/base/descrição)
 antes de enviar a branch e abrir o PR de verdade no GitHub — sem
 mesclar sozinha.
 
-**Fase 7**: `lembra que eu sempre quero que lembretes sejam criados na
-lista Trabalho por padrão`, depois (numa mensagem separada) `na
-verdade, prefiro que lembretes vão pra lista Pessoal por padrão` —
-confirme que a SARAH detecta a semelhança com a preferência anterior
-(via `memory.remember` ou `memory.recall`) e pergunta antes de decidir
-substituir ou manter as duas, em vez de guardar as duas
-silenciosamente. `o que você sabe sobre mim?` continua funcionando
-como antes; pergunte algo com PALAVRAS DIFERENTES do que foi guardado
-(ex.: se guardou algo sobre "reuniões de manhã", pergunte "que período
-do dia costumo marcar encontros?") pra confirmar que a busca semântica
-encontra mesmo assim.
+**Fase 7, parte 1 (memória semântica)**: `lembra que eu sempre quero
+que lembretes sejam criados na lista Trabalho por padrão`, depois (numa
+mensagem separada) `na verdade, prefiro que lembretes vão pra lista
+Pessoal por padrão` — confirme que a SARAH detecta a semelhança com a
+preferência anterior (via `memory.remember` ou `memory.recall`) e
+pergunta antes de decidir substituir ou manter as duas, em vez de
+guardar as duas silenciosamente. `o que você sabe sobre mim?` continua
+funcionando como antes; pergunte algo com PALAVRAS DIFERENTES do que
+foi guardado (ex.: se guardou algo sobre "reuniões de manhã", pergunte
+"que período do dia costumo marcar encontros?") pra confirmar que a
+busca semântica encontra mesmo assim.
+
+**Fase 7, parte 2 (observabilidade)**: force um erro real — peça pra
+`get_message` (Gmail) ler um `messageId` inventado, ou tente
+`figma.export_assets` sabendo que a cota está estourada — e confira o
+painel "Erros recentes" do dashboard (`apps/menubar`) mostrando a
+falha com a mensagem real da API. Repita a mesma chamada com erro
+umas 3 vezes seguidas: deve aparecer um alerta destacado no dashboard
+E a próxima resposta da SARAH deve mencionar isso proativamente antes
+de tratar seu pedido — só uma vez, não a cada turno seguinte.
+
+**Fase 7, parte 3 (nuance no risco médio)**: num projeto já existente,
+peça `roda git status nesse projeto` (`code.run_command`, allowlist —
+deve rodar DIRETO, sem pedir nada) e depois `apaga o arquivo X desse
+projeto` usando `rm` (fora da allowlist) — deve pedir confirmação,
+mas com uma apresentação mais leve que o aviso de alto risco de
+sempre (sem o texto "ALTO RISCO"). Peça um comando ENCADEADO (ex.:
+`ls && cat outro-arquivo`) e confirme que também pede confirmação,
+mesmo os dois comandos sendo individualmente inofensivos — encadear
+tira da allowlist.
 
 A primeira chamada de cada integração do sistema (Calendar, Reminders,
 Notes) deve mostrar um diálogo do macOS pedindo permissão pro processo
