@@ -37,6 +37,28 @@ está operando neste projeto. Sempre confirme com `git rev-parse
 --show-toplevel` que aponta pra `.../jarvis` antes de comandos git
 destrutivos, se houver qualquer dúvida.
 
+## Mudanças em `packages/core`/`packages/permissions` — avisar sobre reiniciar o menu bar
+
+O app de menu bar (`apps/menubar`) sobe um processo filho ("daemon",
+`apps/menubar/src/daemon.ts`) UMA ÚNICA VEZ quando o app abre
+(`spawnSarahDaemon` em `main-process.ts`), e reusa esse mesmo processo
+pra toda chamada de `ask()`/`dashboard()` daquela sessão — nunca é
+respawnado por pedido. Esse processo roda via `tsx`, que só lê o
+código-fonte no instante em que o processo NASCE: um daemon já em
+execução não passa a enxergar uma mudança de código feita no disco
+depois, mesmo com commit/push novo. `apps/cli`, por outro lado, sobe
+um processo novo a cada `pnpm dev`, então não sofre desse problema.
+
+Por isso, toda vez que uma mudança tocar `packages/core` ou
+`packages/permissions` (código que roda DENTRO do daemon), avise
+explicitamente no fim da resposta que o app de menu bar precisa ser
+fechado e reaberto pra a mudança valer de verdade — sem isso, o
+usuário pode testar a mudança nova contra uma sessão que ainda está
+rodando código antigo, sem perceber. Isso já causou confusão real
+numa sessão (Fase 7 parte 2, observabilidade: chamadas do Figma
+pareciam não capturadas pela correção nova, mas eram só o daemon
+antigo ainda rodando) — vale prevenir de se repetir.
+
 ## Segredos — nunca commitar
 
 `.gitignore` já cobre `.env`, `data/` (audit log SQLite) e
