@@ -1,5 +1,6 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { okResult, errorResult } from "@sarah/tool-result";
 import {
   createProject,
   writeProjectFile,
@@ -82,28 +83,16 @@ const createProjectTool = tool(
   async (args) => {
     try {
       const result = await createProject(args.name);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                ok: true,
-                project: result.slug,
-                hostPath: result.hostDir,
-                note: result.alreadyExisted
-                  ? "Projeto já estava aberto nesta sessão — reaproveitado, nada recriado."
-                  : "Projeto novo criado (pasta + git init + container isolado).",
-                github: result.github,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      return okResult({
+        project: result.slug,
+        hostPath: result.hostDir,
+        note: result.alreadyExisted
+          ? "Projeto já estava aberto nesta sessão — reaproveitado, nada recriado."
+          : "Projeto novo criado (pasta + git init + container isolado).",
+        github: result.github,
+      });
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );
@@ -122,9 +111,9 @@ const writeFileTool = tool(
   async (args) => {
     try {
       const target = await writeProjectFile(args.project, args.path, args.content);
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, written: target }) }] };
+      return okResult({ written: target });
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );
@@ -160,7 +149,7 @@ const runCommandTool = tool(
         ],
       };
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );
@@ -179,7 +168,7 @@ const gitCommitTool = tool(
       const result = await gitCommit(args.project, args.message);
       return { content: [{ type: "text", text: JSON.stringify({ exitCode: result.code, stdout: result.stdout, stderr: result.stderr }, null, 2) }] };
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );
@@ -201,7 +190,7 @@ const gitCreateBranchTool = tool(
       const result = await gitCreateBranch(args.project, args.branch);
       return { content: [{ type: "text", text: JSON.stringify({ exitCode: result.code, stdout: result.stdout, stderr: result.stderr }, null, 2) }] };
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );
@@ -224,11 +213,11 @@ const gitPushTool = tool(
     try {
       const result = await gitPush(args.project, args.remote, args.branch, Boolean(args.force));
       if (result.skipped) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: result.skipped }) }] };
+        return errorResult(result.skipped);
       }
       return { content: [{ type: "text", text: JSON.stringify({ exitCode: result.code, stdout: result.stdout, stderr: result.stderr }, null, 2) }] };
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );
@@ -260,62 +249,31 @@ const createPullRequestTool = tool(
     try {
       const token = await getGithubToken();
       if (!token) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ ok: false, error: "GitHub não configurado nesta máquina ainda — rode `pnpm github:auth` uma vez." }),
-            },
-          ],
-        };
+        return errorResult("GitHub não configurado nesta máquina ainda — rode `pnpm github:auth` uma vez.");
       }
 
       const repoInfo = getProjectGithubRepo(args.project);
       if (!repoInfo) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                ok: false,
-                error: `Projeto "${args.project}" não tem repositório no GitHub associado — sem isso não dá pra abrir um Pull Request.`,
-              }),
-            },
-          ],
-        };
+        return errorResult(
+          `Projeto "${args.project}" não tem repositório no GitHub associado — sem isso não dá pra abrir um Pull Request.`
+        );
       }
 
       const baseBranch = args.base_branch ?? (await getDefaultBranch(token, repoInfo.owner, repoInfo.repo));
       const head = await currentBranch(args.project);
       if (head === baseBranch) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                ok: false,
-                error:
-                  `A branch atual do projeto ("${head}") já é a branch base ("${baseBranch}") — crie uma ` +
-                  "branch nova com git_create_branch e commite a mudança nela antes de abrir um Pull Request.",
-              }),
-            },
-          ],
-        };
+        return errorResult(
+          `A branch atual do projeto ("${head}") já é a branch base ("${baseBranch}") — crie uma ` +
+            "branch nova com git_create_branch e commite a mudança nela antes de abrir um Pull Request."
+        );
       }
 
       const pushResult = await gitPush(args.project, "origin", head, false);
       if (pushResult.skipped) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: pushResult.skipped }) }] };
+        return errorResult(pushResult.skipped);
       }
       if (pushResult.code !== 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({ ok: false, error: `Falha ao enviar a branch "${head}" pro GitHub: ${pushResult.stderr.trim() || pushResult.stdout.trim()}` }),
-            },
-          ],
-        };
+        return errorResult(`Falha ao enviar a branch "${head}" pro GitHub: ${pushResult.stderr.trim() || pushResult.stdout.trim()}`);
       }
 
       const pr = await createPullRequest(token, repoInfo.owner, repoInfo.repo, {
@@ -325,16 +283,9 @@ const createPullRequestTool = tool(
         base: baseBranch,
       });
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ ok: true, number: pr.number, url: pr.htmlUrl, headBranch: head, baseBranch }, null, 2),
-          },
-        ],
-      };
+      return okResult({ number: pr.number, url: pr.htmlUrl, headBranch: head, baseBranch });
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );
@@ -355,7 +306,7 @@ const previewTool = tool(
       const result = await startPreview(args.project, args.command);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );

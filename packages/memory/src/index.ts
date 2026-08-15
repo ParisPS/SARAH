@@ -1,6 +1,7 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { okResult } from "@sarah/tool-result";
 import { MemoryStore } from "./db.js";
 
 export { MemoryStore } from "./db.js";
@@ -173,9 +174,7 @@ export function createMemoryServer(dbPath: string): MemoryServerResult {
         }
       }
 
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: true, ...row, ...(warning ? { warning } : {}) }, null, 2) }],
-      };
+      return okResult({ ...row, ...(warning ? { warning } : {}) });
     }
   );
 
@@ -192,9 +191,7 @@ export function createMemoryServer(dbPath: string): MemoryServerResult {
     },
     async (args) => {
       const rows = await store.recall(args.query, args.limit);
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: true, count: rows.length, memories: rows }, null, 2) }],
-      };
+      return okResult({ count: rows.length, memories: rows });
     }
   );
 

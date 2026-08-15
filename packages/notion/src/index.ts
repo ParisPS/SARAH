@@ -1,5 +1,6 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { okResult, errorResult } from "@sarah/tool-result";
 import { createCalendarEntry } from "./client.js";
 
 /**
@@ -64,18 +65,9 @@ const createEvent = tool(
   async (args) => {
     try {
       const result = await createCalendarEntry(args);
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: true, ...result }, null, 2) }],
-      };
+      return okResult(result);
     } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ ok: false, error: String((err as Error).message) }, null, 2),
-          },
-        ],
-      };
+      return errorResult(err);
     }
   }
 );

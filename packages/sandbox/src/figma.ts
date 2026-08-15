@@ -3,6 +3,7 @@ import { userInfo } from "node:os";
 import { writeFile } from "node:fs/promises";
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { okResult, errorResult } from "@sarah/tool-result";
 import { resolveProjectFilePath } from "./projects.js";
 
 /**
@@ -414,17 +415,9 @@ const exportAssetsTool = tool(
     try {
       const token = await getFigmaToken();
       if (!token) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                ok: false,
-                error: "Figma não configurado nesta máquina ainda — rode `pnpm figma:auth` uma vez (gera um token em figma.com, escopos file_content:read + current_user:read).",
-              }),
-            },
-          ],
-        };
+        return errorResult(
+          "Figma não configurado nesta máquina ainda — rode `pnpm figma:auth` uma vez (gera um token em figma.com, escopos file_content:read + current_user:read)."
+        );
       }
 
       const file = await fetchFigmaFile(token, args.fileKey);
@@ -479,29 +472,17 @@ const exportAssetsTool = tool(
         }
       }
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                ok: true,
-                fontsFound: acc.fonts.size,
-                fontsPath,
-                colorsFound: acc.colors.size,
-                colorsPath,
-                contentPath,
-                imagesExported: written,
-                imagesFailed: failed,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      return okResult({
+        fontsFound: acc.fonts.size,
+        fontsPath,
+        colorsFound: acc.colors.size,
+        colorsPath,
+        contentPath,
+        imagesExported: written,
+        imagesFailed: failed,
+      });
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );

@@ -1,6 +1,7 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import PptxGenJS from "pptxgenjs";
+import { okResult, errorResult } from "@sarah/tool-result";
 import { resolveProjectFilePath } from "./projects.js";
 
 /**
@@ -107,16 +108,9 @@ const createPresentationTool = tool(
     try {
       const target = await resolveProjectFilePath(args.project, withPptxExtension(args.filename));
       await buildPresentation(target, args.title, args.slides);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ ok: true, written: target, slideCount: args.slides.length + 1 }, null, 2),
-          },
-        ],
-      };
+      return okResult({ written: target, slideCount: args.slides.length + 1 });
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );

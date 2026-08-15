@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.200",
+    "@sarah/tool-result": "workspace:*",
     "better-sqlite3": "^11.3.0",
     "sqlite-vec": "^0.1.10-alpha.4",
     "zod": "^3.23.0"

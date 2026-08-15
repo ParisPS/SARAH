@@ -1,5 +1,6 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { okResult, errorResult } from "@sarah/tool-result";
 import { openFaceTimeVideoCall } from "./open-url.js";
 
 /**
@@ -37,18 +38,9 @@ const call = tool(
   async (args) => {
     try {
       await openFaceTimeVideoCall(args.target);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ ok: true, target: args.target, videoCallStarted: true }, null, 2),
-          },
-        ],
-      };
+      return okResult({ target: args.target, videoCallStarted: true });
     } catch (err) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }],
-      };
+      return errorResult(err);
     }
   }
 );

@@ -1,5 +1,6 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { okResult, errorResult } from "@sarah/tool-result";
 import { listRecentEmails, getMessage, createDraft, replyDraft, sendDraft } from "./client.js";
 
 /**
@@ -66,18 +67,9 @@ const listRecent = tool(
   async (args) => {
     try {
       const emails = await listRecentEmails(args);
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: true, count: emails.length, emails }, null, 2) }],
-      };
+      return okResult({ count: emails.length, emails });
     } catch (err) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ ok: false, error: String((err as Error).message) }, null, 2),
-          },
-        ],
-      };
+      return errorResult(err);
     }
   }
 );
@@ -94,11 +86,9 @@ const getMessageTool = tool(
   async (args) => {
     try {
       const email = await getMessage(args.messageId);
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, email }, null, 2) }] };
+      return okResult({ email });
     } catch (err) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: false, error: String((err as Error).message) }, null, 2) }],
-      };
+      return errorResult(err);
     }
   }
 );
@@ -118,11 +108,9 @@ const createDraftTool = tool(
   async (args) => {
     try {
       const draft = await createDraft(args);
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, draft }, null, 2) }] };
+      return okResult({ draft });
     } catch (err) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: false, error: String((err as Error).message) }, null, 2) }],
-      };
+      return errorResult(err);
     }
   }
 );
@@ -141,11 +129,9 @@ const replyDraftTool = tool(
   async (args) => {
     try {
       const draft = await replyDraft(args);
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, draft }, null, 2) }] };
+      return okResult({ draft });
     } catch (err) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: false, error: String((err as Error).message) }, null, 2) }],
-      };
+      return errorResult(err);
     }
   }
 );
@@ -163,11 +149,9 @@ const sendDraftTool = tool(
   async (args) => {
     try {
       const result = await sendDraft(args.draftId);
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, sent: result }, null, 2) }] };
+      return okResult({ sent: result });
     } catch (err) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: false, error: String((err as Error).message) }, null, 2) }],
-      };
+      return errorResult(err);
     }
   }
 );

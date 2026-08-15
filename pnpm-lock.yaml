@@ -49,6 +49,9 @@ importers:
       '@sarah/voice':
         specifier: workspace:*
         version: link:../../packages/voice
+      '@sarah/wake-word':
+        specifier: workspace:*
+        version: link:../../packages/wake-word
       three:
         specifier: ^0.185.1
         version: 0.185.1
@@ -156,6 +159,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.200
         version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      '@sarah/tool-result':
+        specifier: workspace:*
+        version: link:../tool-result
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -174,6 +180,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.200
         version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      '@sarah/tool-result':
+        specifier: workspace:*
+        version: link:../tool-result
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -183,6 +192,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.200
         version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      '@sarah/tool-result':
+        specifier: workspace:*
+        version: link:../tool-result
       better-sqlite3:
         specifier: ^11.3.0
         version: 11.10.0
@@ -202,6 +214,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.200
         version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      '@sarah/tool-result':
+        specifier: workspace:*
+        version: link:../tool-result
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -217,6 +232,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.200
         version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      '@sarah/tool-result':
+        specifier: workspace:*
+        version: link:../tool-result
       pptxgenjs:
         specifier: ^4.0.1
         version: 4.0.1
@@ -224,13 +242,20 @@ importers:
         specifier: ^3.23.0
         version: 3.25.76
 
+  packages/tool-result: {}
+
   packages/voice: {}
+
+  packages/wake-word: {}
 
   packages/web-search:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.3.200
         version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      '@sarah/tool-result':
+        specifier: workspace:*
+        version: link:../tool-result
       zod:
         specifier: ^3.23.0
         version: 3.25.76

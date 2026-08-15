@@ -1,5 +1,6 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { okResult, errorResult } from "@sarah/tool-result";
 import { writeProjectFile, runProjectCommand } from "./projects.js";
 
 /**
@@ -65,9 +66,7 @@ const createSvgTool = tool(
     try {
       const trimmed = args.svgContent.trim();
       if (!/<svg[\s>]/i.test(trimmed)) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ ok: false, error: "svgContent não parece um SVG válido — precisa conter uma tag <svg>." }) }],
-        };
+        return errorResult("svgContent não parece um SVG válido — precisa conter uma tag <svg>.");
       }
 
       let content = trimmed;
@@ -77,9 +76,9 @@ const createSvgTool = tool(
 
       const relPath = assetPath(withSvgExtension(args.filename));
       const target = await writeProjectFile(args.project, relPath, content);
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, written: target, path: relPath }, null, 2) }] };
+      return okResult({ written: target, path: relPath });
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );
@@ -106,11 +105,11 @@ const exportRasterTool = tool(
 
       const rsvg = await runProjectCommand(args.project, `rsvg-convert${widthFlag} -o "${pngRel}" "${svgRel}"`);
       if (rsvg.code !== 0) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Falha ao rasterizar o SVG: ${rsvg.stderr.trim()}` }) }] };
+        return errorResult(`Falha ao rasterizar o SVG: ${rsvg.stderr.trim()}`);
       }
 
       if (args.format === "png") {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: true, path: pngRel }, null, 2) }] };
+        return okResult({ path: pngRel });
       }
 
       const jpgRel = `${base}.jpg`;
@@ -119,11 +118,11 @@ const exportRasterTool = tool(
       // alfa que o PNG intermediário pode ter.
       const convert = await runProjectCommand(args.project, `magick "${pngRel}" -background white -flatten "${jpgRel}"`);
       if (convert.code !== 0) {
-        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: `Falha ao converter pra JPG: ${convert.stderr.trim()}` }) }] };
+        return errorResult(`Falha ao converter pra JPG: ${convert.stderr.trim()}`);
       }
-      return { content: [{ type: "text", text: JSON.stringify({ ok: true, path: jpgRel }, null, 2) }] };
+      return okResult({ path: jpgRel });
     } catch (err) {
-      return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }] };
+      return errorResult(err);
     }
   }
 );

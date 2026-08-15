@@ -1,5 +1,6 @@
 import { tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { okResult, errorResult } from "@sarah/tool-result";
 import { searchPrice } from "./client.js";
 
 /**
@@ -39,18 +40,9 @@ const searchPriceTool = tool(
   async (args) => {
     try {
       const result = await searchPrice(args);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ ok: true, query: result.query, count: result.options.length, options: result.options }, null, 2),
-          },
-        ],
-      };
+      return okResult({ query: result.query, count: result.options.length, options: result.options });
     } catch (err) {
-      return {
-        content: [{ type: "text", text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2) }],
-      };
+      return errorResult(err);
     }
   }
 );
