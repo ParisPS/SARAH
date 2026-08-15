@@ -79,7 +79,8 @@ async function main(): Promise<void> {
       "'cria um lembrete pra ligar pro dentista', 'resuma meus e-mails de hoje', " +
       "'lembra que...' (guarda uma preferência ou fato), 'o que você sabe sobre mim?', " +
       "'lista minhas notas', 'cria uma nota com...', 'envia o rascunho <id>' (pede confirmação), " +
-      "'busca o contato do Fulano' ou 'liga por vídeo pro Fulano' (FaceTime, pede confirmação leve)\n"
+      "'busca o contato do Fulano' ou 'liga por vídeo pro Fulano' (FaceTime, pede confirmação leve), " +
+      "'quanto custa uma Air Fryer 4L' (busca preços reais na web)\n"
   );
 
   try {

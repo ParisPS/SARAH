@@ -30,6 +30,9 @@ export const TOOL_META = [
   // núcleo criada pra FaceTime nesta fase (não foi pedido; ver Fase 4
   // parte 2 pro padrão de quais tarefas ganham símbolo próprio).
   { prefix: "mcp__sarah-facetime__", emoji: "📹", name: "FaceTime", sphereTask: null },
+  // `sphereTask: null` de propósito — nenhuma animação própria do
+  // núcleo criada pra busca de preços nesta fase.
+  { prefix: "mcp__sarah-web-search__", emoji: "💰", name: "Busca de preços", sphereTask: null },
 ];
 
 export function metaForTool(toolName) {

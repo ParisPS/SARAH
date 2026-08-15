@@ -81,6 +81,10 @@ const LOW_RISK_TOOLS = new Set<string>([
   // SEPARADA `facetime.call`, essa sim fora desta lista (ver
   // MEDIUM_RISK_TOOLS abaixo).
   "mcp__sarah-apple-contacts__find",
+  // Busca de preços (Fase 9): leitura pura via Serper.dev (Google
+  // Shopping), sem efeito colateral nenhum — não compra, não afeta
+  // nada, mesma justificativa de list_events/list_reminders.
+  "mcp__sarah-web-search__search_price",
   // Sandbox de código (Fase 5, parte 1): a garantia de segurança destas
   // quatro tools vem do ISOLAMENTO DO CONTAINER em si — validado de
   // verdade (ver docs/architecture.md) que o container não enxerga o

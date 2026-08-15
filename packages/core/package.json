@@ -17,6 +17,7 @@
     "@sarah/apple-notes": "workspace:*",
     "@sarah/sandbox": "workspace:*",
     "@sarah/apple-contacts": "workspace:*",
-    "@sarah/facetime": "workspace:*"
+    "@sarah/facetime": "workspace:*",
+    "@sarah/web-search": "workspace:*"
   }
 }

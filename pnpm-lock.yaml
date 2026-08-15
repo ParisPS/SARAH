@@ -147,6 +147,9 @@ importers:
       '@sarah/sandbox':
         specifier: workspace:*
         version: link:../sandbox
+      '@sarah/web-search':
+        specifier: workspace:*
+        version: link:../web-search
 
   packages/facetime:
     dependencies:
@@ -222,6 +225,15 @@ importers:
         version: 3.25.76
 
   packages/voice: {}
+
+  packages/web-search:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.3.200
+        version: 0.3.226(@anthropic-ai/sdk@0.116.0(zod@3.25.76))(@modelcontextprotocol/sdk@1.30.0(zod@3.25.76))(zod@3.25.76)
+      zod:
+        specifier: ^3.23.0
+        version: 3.25.76
 
 packages:
 

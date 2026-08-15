@@ -1,4 +1,4 @@
-# SARAH — Fases 0-8 completas (Figma, Fase 5, com pendência de cota)
+# SARAH — Fases 0-9 completas (Figma pausado no Starter por decisão do usuário)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -454,6 +454,36 @@ ponta a ponta — não por ter dado errado, por escolha: o diálogo nativo
 de confirmação continua exatamente como sempre foi, exigindo clique
 manual, sem confirmação por voz. Todo o código (nunca tinha sido
 commitado) foi revertido.
+
+## Fase 9 — busca de preços (`web.search_price`)
+
+- Primeira capacidade de busca na web da SARAH — decisão de design
+  explícita: NÃO é destravar a tool nativa `WebSearch` do Agent SDK
+  sem escopo (continua bloqueada), é uma tool própria e focada, só pra
+  preço de produto/serviço.
+- **Provedor**: Serper.dev (revenda de resultados do Google Shopping)
+  — escolhido depois de pesquisar as alternativas: Bing Search API
+  aposentada, Google Custom Search fechada pra clientes novos, Brave
+  Search API exige cartão de crédito. Serper dá 2.500 buscas grátis
+  sem cartão, com endpoint `/shopping` dedicado (preço/loja/link já
+  estruturados).
+- Baixo risco (`LOW_RISK_TOOLS`) — só leitura, nenhum efeito colateral.
+  Nunca inventa preço: lista vazia é resposta válida (produto não
+  encontrado), não erro.
+- **Validado:** "quanto custa uma Air Fryer Mondial 4L" via
+  `createSarahSession` real devolveu 5 opções reais (R$ 200-259,
+  Amazon/Shopee/Mercado Livre/Casas Bahia), sem confirmação (risco
+  baixo confirmado no audit log).
+- **Achado real, fora do escopo desta fase**: nesse mesmo teste, uma
+  tool interna do próprio Agent SDK (`ToolSearch`, mecanismo de
+  resolução de tools "adiadas" quando a lista de tools registradas
+  cresce) rodou SEM passar pelo Gateway (`canUseTool`) — confirmado
+  direto no audit log (nenhuma linha gravada pra ela, diferente da
+  chamada de busca de preço logo depois). Contradiz o princípio
+  central do projeto ("toda tool passa pelo Gateway antes de rodar").
+  Não corrigido nesta fase — fica registrado como pendência nova pro
+  usuário decidir o que fazer. Detalhe completo em
+  `docs/architecture.md`.
 
 ## Setup
 

@@ -13,6 +13,7 @@ import { appleNotesServer, checkNotesStatus } from "@sarah/apple-notes";
 import { codeServer, graphicsServer, slidesServer, figmaServer, stopAllProjects } from "@sarah/sandbox";
 import { appleContactsServer, checkContactsStatus } from "@sarah/apple-contacts";
 import { facetimeServer } from "@sarah/facetime";
+import { webSearchServer, checkWebSearchStatus } from "@sarah/web-search";
 
 /**
  * Núcleo do agente: monta o Gateway de permissões, o audit log, a
@@ -669,6 +670,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "sarah-figma": figmaServer,
           "sarah-apple-contacts": appleContactsServer,
           "sarah-facetime": facetimeServer,
+          "sarah-web-search": webSearchServer,
         },
         disallowedTools: BUILTIN_TOOLS_TO_BLOCK,
         canUseTool,
@@ -725,6 +727,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
       { id: "sarah-gmail", label: "Gmail", run: checkGmailStatus },
       { id: "sarah-apple-notes", label: "Apple Notes", run: checkNotesStatus },
       { id: "sarah-apple-contacts", label: "Apple Contacts", run: checkContactsStatus },
+      { id: "sarah-web-search", label: "Busca de preços", run: checkWebSearchStatus },
     ];
     const settled = await Promise.allSettled(checks.map((c) => c.run()));
     const integrations: IntegrationStatus[] = settled.map((result, i) => {

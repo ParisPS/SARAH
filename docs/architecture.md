@@ -5402,3 +5402,97 @@ validado de ponta a ponta; WhatsApp avaliado, prototipado, testado
 contra a API real, e abandonado por decisão consciente do usuário —
 registrado em detalhe aqui pra nunca ser confundido com uma tentativa
 técnica que falhou.**
+
+## Fase 9 — busca de preços (`web.search_price`)
+
+Primeira capacidade de busca na web da SARAH — até aqui, toda
+capacidade era específica de um serviço (Calendar, Notion, Gmail...).
+Decisão de design explícita do próprio pedido: NÃO é destravar a tool
+nativa `WebSearch` do Agent SDK sem escopo (continua bloqueada em
+`BUILTIN_TOOLS_TO_BLOCK`) — é uma tool PRÓPRIA e FOCADA, só pra preço
+de produto/serviço, seguindo o mesmo padrão do resto do projeto.
+
+### Escolha de provedor — pesquisada antes de implementar, decisão trazida ao usuário
+
+Nenhum provedor de busca é gratuito e sem fricção em 2026 — pesquisado
+direto nas fontes oficiais antes de decidir, não assumido:
+
+- **Bing Search API**: aposentada pela Microsoft em agosto de 2025 —
+  não existe mais.
+- **Google Custom Search JSON API**: fechada pra clientes NOVOS desde
+  2026 (confirmado na documentação oficial do Google, que também
+  anuncia desligamento total em 1º de janeiro de 2027 pros clientes
+  antigos que ainda restam).
+- **Brave Search API**: perdeu o tier grátis sem cartão em fevereiro
+  de 2026 — hoje exige cartão de crédito já no cadastro, com cobrança
+  automática sem teto de gasto depois de ~1000 buscas de crédito
+  mensal.
+- **Serper.dev** (revenda de resultados do Google): 2.500 buscas
+  grátis SEM exigir cartão de crédito, mais um endpoint `/shopping`
+  dedicado que já devolve título/preço/loja/link estruturados — evita
+  ter que extrair preço de snippet de busca solto, bem menos
+  confiável. Essa foi a opção escolhida, apresentada ao usuário junto
+  com o trade-off de cada alternativa (mesmo padrão de trazer decisão
+  de custo/conta externa pro usuário, como Figma/WhatsApp antes).
+
+### Implementação
+
+`packages/web-search` (mesmo formato leve de sempre — `fetch` cru,
+sem SDK oficial): `POST https://google.serper.dev/shopping` com
+header `X-API-KEY`, corpo `{q, gl: "br", hl: "pt-br"}` (sempre
+Brasil/português, coerente com o resto do projeto — moeda, idioma,
+uso real do usuário). Resposta mapeada pra `{title, price, source,
+link, rating}` por opção; itens sem título OU sem preço são
+descartados (nunca inventa um valor pra preencher um campo faltando).
+Lista vazia é um resultado VÁLIDO (produto não encontrado), não um
+erro — a description da tool deixa isso explícito pro agente não
+inventar preço se a busca não achar nada.
+
+Baixo risco (`LOW_RISK_TOOLS`, `@sarah/permissions`) — só leitura/
+busca, nenhum efeito colateral possível, mesma classe de
+`list_events`/`list_reminders`.
+
+### Validação — dois níveis, o segundo revelou um achado real fora do escopo desta fase
+
+1. **Chamada direta ao cliente de produção** (`searchPrice`, fora do
+   agente): "Air Fryer Mondial 4L" devolveu 5 opções reais — preços
+   entre R$ 200 e R$ 259, lojas reais (Amazon.com.br, Shopee, Mercado
+   Livre, Casas Bahia), com link e avaliação. Faixa plausível pro
+   produto real.
+2. **Caminho de produção completo, via `createSarahSession` real**
+   (mesmo Gateway/MCP/audit log de `apps/cli`/`apps/menubar`, isolado
+   do app Electron ao vivo — mesma cautela já registrada na Fase 8
+   sobre não driblar o app em uso real): perguntar "quanto custa uma
+   Air Fryer Mondial 4L" disparou `mcp__sarah-web-search__search_price`
+   com `risk: low`, sem pedir confirmação, e a SARAH sintetizou os
+   resultados numa tabela legível (modelo/preço/loja/avaliação) — sem
+   inventar nada além do que a API devolveu. Confirmado no audit log:
+   `id 318, risk='low', decision='auto-allow', status='success'`.
+
+**Achado real, fora do escopo desta fase, registrado aqui pra não se
+perder**: nesse mesmo teste, a mensagem do modelo continha uma chamada
+a uma tool chamada `ToolSearch` (mecanismo do próprio Agent SDK pra
+resolver esquemas de tools "adiadas" quando a lista de tools registradas
+fica grande — o mesmo mecanismo que o Claude Code usa pra si mesmo)
+que **NUNCA passou pelo Gateway** (`canUseTool`) — confirmado direto no
+banco: não existe NENHUMA linha em `tool_calls` pra ela (nem
+`auto-allow` nem `confirmed`/`denied`), enquanto a chamada seguinte
+(`search_price`, risco baixo de verdade) foi gravada normalmente. O
+próprio código de `@sarah/audit` já previa essa possibilidade em
+comentário (`recordResult`: "uma tool que por algum motivo não passou
+por `canUseTool`" — só loga um aviso, nunca derruba a conversa), mas
+essa é a PRIMEIRA vez que isso realmente aconteceu neste projeto, não
+uma situação hipotética. Contradiz o princípio central do Gateway
+("toda tool passa por `canUseTool` antes de rodar", ver
+`@sarah/permissions`) — mesmo `ToolSearch` sendo, aparentemente, só
+introspecção de esquema sem efeito colateral (não uma ação real), o
+fato de existir uma tool rodando fora do Gateway é uma exceção real ao
+invariante, não decidida/registrada antes. **Não foi corrigido nesta
+fase** — fica registrado como achado a decidir (ex.: bloquear
+`ToolSearch` em `BUILTIN_TOOLS_TO_BLOCK`, se possível, ou confirmar
+que é seguro deixar como está), não escondido atrás de "Fase 9
+completa".
+
+**Fase 9 está completa** pro objetivo pedido (`web.search_price`,
+validado de ponta a ponta com dado real). O achado do `ToolSearch`
+fica como pendência nova, separada, pro usuário decidir o que fazer.
