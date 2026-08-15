@@ -25,6 +25,11 @@ export const TOOL_META = [
   { prefix: "mcp__sarah-memory__remember", emoji: "🧠", name: "Memória", sphereTask: "memory" },
   { prefix: "mcp__sarah-apple-notes__", emoji: "📝", name: "Apple Notes", sphereTask: null },
   { prefix: "mcp__sarah-apple-notes__create_note", emoji: "📝", name: "Apple Notes", sphereTask: "writing" },
+  { prefix: "mcp__sarah-apple-contacts__", emoji: "👤", name: "Contatos", sphereTask: null },
+  // `sphereTask: null` de propósito — nenhuma animação própria do
+  // núcleo criada pra FaceTime nesta fase (não foi pedido; ver Fase 4
+  // parte 2 pro padrão de quais tarefas ganham símbolo próprio).
+  { prefix: "mcp__sarah-facetime__", emoji: "📹", name: "FaceTime", sphereTask: null },
 ];
 
 export function metaForTool(toolName) {
