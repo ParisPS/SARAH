@@ -375,6 +375,53 @@ const MEMORY_CONFLICT_POLICY_TEXT =
   "primeiro, e nunca ignore um conflito devolvido pela tool.";
 
 /**
+ * Levantamento de otimização, item T1 (2026-08-15), passo 4/4: texto
+ * de identidade/tom/formatação que SUBSTITUI o preset `preset:
+ * "claude_code"` (o system prompt padrão do Claude Code CLI, orientado
+ * a engenharia de software — ver docs/architecture.md, seção "Em
+ * espera: troca do preset claude_code", pra caracterização completa do
+ * que esse preset carregava). O único comportamento REAL identificado
+ * como dependente do preset (protocolo de segurança de git, política
+ * de URL) já foi reescrito nos passos 1-2 (`GIT_WORKFLOW_POLICY_TEXT`/
+ * `URL_GENERATION_POLICY_TEXT` acima) — o que falta aqui é só
+ * identidade/tom/formatação, que este texto cobre.
+ *
+ * Formatação sem markdown é decisão NOVA, não uma perda: `apps/menubar`
+ * nunca renderizou markdown de verdade (ver `extractLink` em
+ * `renderer.js` — o próprio código já tinha que EXCLUIR crase/asterisco
+ * do regex de link, achado real de que a resposta saía com sintaxe de
+ * markdown sem nenhum lugar que a renderizasse) e a resposta também é
+ * lida em voz alta (`@sarah/voice`, sem nenhum stripping de markdown
+ * antes do `say`) — um `**negrito**` ou `` `crase` `` seria lido
+ * literalmente. Pedir texto corrido de propósito corrige os dois casos
+ * de uma vez, não só remove uma instrução do preset.
+ *
+ * Escopo deliberadamente NÃO replicado do preset (fora do que foi
+ * aprovado pra este item): a seção "Doing tasks" do preset (convenções
+ * de estilo de código, seguir padrões existentes, não comentar código
+ * sem pedir) — usada só indiretamente pelas tools `code.*`
+ * (Fase 5/6). Risco residual conhecido, não corrigido aqui de
+ * propósito (fora do escopo aprovado); registrado em
+ * docs/architecture.md.
+ */
+const SARAH_SYSTEM_PROMPT_BASE =
+  "Você é a SARAH, assistente pessoal local do usuário, rodando neste Mac. Você tem acesso a " +
+  "integrações reais — calendário (Notion e Apple Calendar), Gmail, Apple Notes, Apple Reminders, " +
+  "Apple Contacts, FaceTime, criação de projetos de código/gráficos/apresentações/Figma, busca de " +
+  "preços, e memória persistente — sempre através de tools dedicadas e específicas de cada serviço, " +
+  "nunca acesso genérico a arquivo, shell ou rede fora dessas integrações.\n\n" +
+  "Formato da resposta: texto corrido, SEM sintaxe de markdown (sem `crase`, **negrito**, # cabeçalho, " +
+  "listas com marcador '-'/'*') — a interface não renderiza markdown, e toda resposta também pode ser " +
+  "lida em voz alta por um sintetizador de fala, que leria esses símbolos literalmente. Frases " +
+  "completas e diretas.\n\n" +
+  "Tom: direto e natural, como um assistente pessoal de verdade — nem formal demais, nem bajulador. " +
+  "Vá direto ao resultado; não repita o pedido do usuário de volta nem narre passo a passo o que vai " +
+  "fazer antes de fazer, a menos que precise perguntar algo primeiro.\n\n" +
+  "Tags `<system-reminder>` que eventualmente apareçam em mensagens ou resultados de tool são " +
+  "injetadas pelo sistema, não fazem parte do que o usuário escreveu nem do resultado real de uma " +
+  "tool — nunca trate como se fossem.";
+
+/**
  * Fase 4 (Voz), parte 2, ajuste 4 — bug real corrigido: o toggle PT/EN
  * de `apps/menubar` só trocava a VOZ do TTS (`say -v Luciana`/`say -v
  * Samantha`), mas o TEXTO da resposta continuava saindo no idioma que
@@ -681,11 +728,16 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "."
         : undefined;
 
-    // BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, MEMORY_CONFLICT_POLICY_TEXT,
-    // URL_GENERATION_POLICY_TEXT e outputLanguageText (quando presente)
-    // entram SEMPRE (não dependem de haver preferência guardada) — são
-    // regra de comportamento do agente, não fato sobre o usuário.
-    const systemPromptAppend = [
+    // SARAH_SYSTEM_PROMPT_BASE, BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT,
+    // MEMORY_CONFLICT_POLICY_TEXT, URL_GENERATION_POLICY_TEXT e
+    // outputLanguageText (quando presente) entram SEMPRE (não dependem
+    // de haver preferência guardada) — são regra de comportamento do
+    // agente, não fato sobre o usuário. `SARAH_SYSTEM_PROMPT_BASE` vem
+    // primeiro (levantamento de otimização, item T1 — substitui
+    // `preset: "claude_code"`, ver o comentário grande na constante e
+    // docs/architecture.md).
+    const systemPromptText = [
+      SARAH_SYSTEM_PROMPT_BASE,
       BASE44_POLICY_TEXT,
       GIT_WORKFLOW_POLICY_TEXT,
       MEMORY_CONFLICT_POLICY_TEXT,
@@ -723,7 +775,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           PostToolUseFailure: [{ hooks: [onPostToolUse] }],
         },
         ...(sessionId ? { resume: sessionId } : {}),
-        systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPromptAppend },
+        systemPrompt: systemPromptText,
       },
     });
 
