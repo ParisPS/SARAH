@@ -310,7 +310,50 @@ const GIT_WORKFLOW_POLICY_TEXT =
   "essa branch e abrir o Pull Request. NUNCA commite/pushe direto na main/master de um projeto já " +
   "existente pra depois abrir PR — a branch precisa existir ANTES do commit. NUNCA faça merge do PR " +
   "sozinho — não existe tool de merge aqui de propósito; depois de aberto, o PR fica esperando o " +
-  "usuário revisar e mesclar pelo GitHub.";
+  "usuário revisar e mesclar pelo GitHub.\n\n" +
+  "Protocolo de segurança de commit (levantamento de otimização, item T1 — nenhuma tool aqui reforça " +
+  "isso sozinha, `code.git_commit` é baixo risco e roda sem confirmação, então depende de você seguir " +
+  "por conta própria, não do Gateway): só chame `code.git_commit` quando o usuário pedir um commit " +
+  "explicitamente, ou quando for um passo claramente necessário de um pedido maior que já implica " +
+  "commitar (ex.: \"abre um PR com essa mudança\" implica commitar antes). Se não estiver claro se o " +
+  "usuário quer commitar agora, pergunte antes de chamar a tool — não assuma. Mensagem do commit: " +
+  "concisa (1-2 frases), focada no PORQUÊ da mudança, não só no QUÊ; quando fizer sentido, confira o " +
+  "estilo dos commits recentes do projeto (`code.run_command` com 'git log') antes de escrever a sua. " +
+  "NUNCA tente reescrever um commit já feito (`git commit --amend`) — se algo precisar corrigir, crie " +
+  "um commit NOVO por cima; isso só seria possível via `code.run_command` com o comando cru, que de " +
+  "qualquer forma já cai fora da allowlist de auto-aprovação (ver abaixo) e pede confirmação, mas nem " +
+  "tente. Qualquer comando git DESTRUTIVO (`reset --hard`, `clean -f`, `checkout .`, `branch -D`, " +
+  "force-push fora de `code.git_push`) só existe via `code.run_command` — já não está na allowlist de " +
+  "auto-aprovação, então SEMPRE pede confirmação antes de rodar (isso já é garantido pelo Gateway, não " +
+  "depende de você lembrar), mas nunca sugira ao usuário um desses como atalho pra evitar a " +
+  "confirmação.";
+
+/**
+ * Levantamento de otimização, item T1 (2026-08-15) — antes de trocar o
+ * `systemPrompt` do preset `claude_code` por um mais enxuto, a decisão
+ * foi reescrever nos termos da própria SARAH o que hoje vem de graça
+ * DENTRO desse preset (ver docs/architecture.md, seção "Em espera:
+ * troca do preset claude_code"): um protocolo de segurança de git
+ * (acima, incorporado ao `GIT_WORKFLOW_POLICY_TEXT` já existente) e
+ * esta política de URL. Só depois dos dois validados com o mesmo tipo
+ * de teste seguro usado no item T3 (Agent SDK real, `canUseTool`
+ * negando antes da execução) é que o preset é trocado de verdade.
+ *
+ * Genuinamente aplicável ao uso da SARAH (não só copiado do preset por
+ * copiar): `mcp__sarah-gmail__create_draft`/`reply_draft` deixam o
+ * modelo escrever corpo de e-mail livre, e `web.search_price` é a
+ * ÚNICA tool que devolve URL real de busca — sem uma regra explícita,
+ * nada impede o modelo de "chutar" a URL de um site/restaurante/
+ * empresa que o usuário mencionou, plausível mas inventada.
+ */
+const URL_GENERATION_POLICY_TEXT =
+  "Nunca invente ou \"chute\" uma URL (site, link, endereço web) — só inclua uma URL numa resposta, " +
+  "rascunho de e-mail (create_draft/reply_draft) ou qualquer outro lugar se ela vier de uma fonte " +
+  "REAL: o resultado de uma tool (ex.: web.search_price devolve links reais de busca; " +
+  "code.create_pull_request devolve a URL real do PR criado), ou algo que o próprio usuário forneceu " +
+  "na conversa. Se não tiver uma URL real disponível pro que foi pedido, diga isso claramente ao " +
+  "usuário em vez de compor uma URL plausível — um link inventado que não existe (ou aponta pro lugar " +
+  "errado) é pior que admitir que não tem a informação.";
 
 /**
  * Fase 7, parte 1 (memória semântica) — reforço no `systemPrompt`,
@@ -638,14 +681,15 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           "."
         : undefined;
 
-    // BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, MEMORY_CONFLICT_POLICY_TEXT
-    // e outputLanguageText (quando presente) entram SEMPRE (não
-    // dependem de haver preferência guardada) — são regra de
-    // comportamento do agente, não fato sobre o usuário.
+    // BASE44_POLICY_TEXT, GIT_WORKFLOW_POLICY_TEXT, MEMORY_CONFLICT_POLICY_TEXT,
+    // URL_GENERATION_POLICY_TEXT e outputLanguageText (quando presente)
+    // entram SEMPRE (não dependem de haver preferência guardada) — são
+    // regra de comportamento do agente, não fato sobre o usuário.
     const systemPromptAppend = [
       BASE44_POLICY_TEXT,
       GIT_WORKFLOW_POLICY_TEXT,
       MEMORY_CONFLICT_POLICY_TEXT,
+      URL_GENERATION_POLICY_TEXT,
       outputLanguageText,
       preferencesText,
       repeatedFailureText,
