@@ -3135,7 +3135,28 @@ retomada de algo "pendente".
    nativo de confirmação mantido como sempre foi. Ver "## Fase 8 —
    FaceTime", "## Fase 8 — dois ajustes..." e "## Fase 8 — WhatsApp"
    mais abaixo pro detalhe completo de cada um.
-9. Novas integrações e expansões.
+9. **Fase 9 — completa**: `web.search_price(item)` (Google Shopping via
+   Serper.dev), baixo risco, só leitura — nunca inventa preço, lista
+   vazia é resposta válida. Frente de reserva de restaurante/museu foi
+   pesquisada, um caminho técnico viável foi proposto (Google Places
+   API), mas CONSCIENTEMENTE descartada por decisão do usuário — não é
+   pendência em aberto. Ver "## Fase 9 — busca de preços" mais abaixo.
+10. **Fase 10 — completa**: quatro frentes em paralelo. (a) Escuta
+    contínua (`@sarah/wake-word`: wake-word "SARAH" via openWakeWord +
+    duas palmas via amplitude) disparando gravação automaticamente, e
+    interromper a fala (`stopSpeaking()`, mata o `say` com SIGKILL) a
+    qualquer momento — ver "## Fase 10 — gatilho de escuta contínua +
+    interromper a fala". (b) Dashboard reorganizado por tema (status à
+    esquerda, atividade à direita), categorias/erros limitados a um
+    número legível — ver "## Fase 10 — dashboard reorganizado por tema
+    (v4)". (c) README conciso (só capacidade real/ativa) + `docs/
+    DICAS.md` novo (lições práticas por fase). (d) Otimização de
+    código: performance (índices SQLite, queries agregadas), custo de
+    token (descriptions mais enxutas, `systemPrompt` próprio da SARAH
+    substituindo o preset padrão do Claude Code) e duplicação
+    (`@sarah/tool-result`) — ver "## Fase 10 — otimização de código".
+
+**Todas as fases numeradas (0 a 10) estão completas.**
 
 ## Próximo passo concreto
 
@@ -5622,7 +5643,7 @@ implementado e validado de ponta a ponta (único entregável real); a
 frente de reservas foi pesquisada, proposta e conscientemente
 descartada — não é trabalho planejado nem pendência.**
 
-## Otimização de código: performance, custo de token e duplicação
+## Fase 10 — otimização de código: performance, custo de token e duplicação
 
 Primeira vez que se mexeu em código já validado e funcionando sem
 estar construindo algo novo — regressão aqui é silenciosa, podendo
@@ -5633,11 +5654,12 @@ nada (medido, não chutado), classificado por RISCO × GANHO; só depois,
 com aprovação item a item, implementar — sempre com reteste de
 regressão antes de cada commit, não só na área tocada.
 
-Sem título de "Fase N" de propósito: o número 10 já está reivindicado
-por duas frentes em paralelo nesta sessão (escuta contínua/wake-word,
-ainda sem seção própria aqui; dashboard v4, também pendente) — este
-trabalho não compete por esse número, só é registrado na ordem em que
-aconteceu.
+Quarta frente da Fase 10, ao lado de escuta contínua/interromper a fala
+(ver "## Fase 10 — gatilho de escuta contínua + interromper a fala" e
+"## Fase 10 — dashboard reorganizado por tema (v4)" acima) e do
+README/DICAS.md (ver "README conciso + docs/DICAS.md" — commit
+`6efc7bd`) — as quatro rodaram em paralelo na mesma sessão, por isso
+aparecem como seções separadas em vez de uma só.
 
 ### Levantamento (medido, não chutado)
 
@@ -5917,3 +5939,162 @@ código de saída, sem nunca capturar/imprimir o valor (nem truncado).
 Recomendação ao usuário: como precaução, considerar revogar/regenerar
 o Personal Access Token do GitHub salvo como `sarah-code-github-token`
 no Keychain, já que uma fração real dele passou por esta conversa.
+
+## Fase 10 — gatilho de escuta contínua + interromper a fala
+
+Dois pedidos independentes na mesma fase: (1) ligar o microfone em
+segundo plano continuamente enquanto o app estiver aberto, disparando
+uma gravação sozinha ao ouvir a wake-word "SARAH" ou duas palmas
+seguidas — decisão consciente do usuário já tomada de propósito
+(nunca precisa reconfirmar a cada sessão); (2) um jeito de interromper
+a fala (TTS) em andamento a qualquer momento.
+
+### Gatilho de escuta — `@sarah/wake-word` (pacote novo)
+
+Processo Python de vida longa, separado do resto da SARAH (Node/
+TypeScript) — openWakeWord (detecção de wake-word) é uma biblioteca
+Python sem porte pra Node/JS, mesmo espírito de sempre deste projeto
+de chamar um processo externo especializado via stdio em vez de
+reimplementar algo que já existe pronto (`packages/apple-calendar`
+JXA, `packages/voice` whisper-cli/sox são o mesmo padrão). Protocolo:
+uma linha JSON por evento em stdout (`wake`/`clap`/`speech`/`error`/
+`ready`), qualquer log/diagnóstico vai pra stderr — mesmo protocolo
+já usado no bridge JXA e no daemon do menu bar.
+
+**Viabilidade confirmada rodando de verdade nesta máquina ANTES de
+integrar tudo** (não assumida por documentação): script Python
+standalone com `openwakeword`/`sounddevice`, detecção real de "hey
+jarvis" com score de até 0,998 falado isolado. Achado real: `Model(...,
+vad_threshold=...)` lançava `ModuleNotFoundError: No module named
+'tflite_runtime'` numa venv fresca sem `download_models()` rodado antes
+— resolvido rodando `download_models()` sempre na configuração
+(`scripts/wake-word-setup.sh`) e usando `openwakeword.vad.VAD()`
+diretamente (sempre ONNX, sem dependência de `tflite_runtime`) em vez
+do `vad_threshold` do `Model`. Isolamento em venv Python próprio
+(`packages/wake-word/.venv/`, nunca comitado — `pip install` direto
+contra o Python do Homebrew falha com "externally-managed-environment",
+PEP 668).
+
+**Sem modelo estoque pra "SARAH"**: os modelos prontos do openWakeWord
+são `alexa`/`hey_mycroft`/`hey_jarvis`/`hey_rhasspy`/`timer`/`weather`
+— nenhum "SARAH". Treinar um customizado exige o notebook oficial do
+Google Colab (~1h, interativo, precisa de conta Google/browser — não
+roda headless, não dá pra automatizar aqui). Decisão do usuário:
+implementar tudo agora com `hey_jarvis` como placeholder
+(`SARAH_WAKEWORD_MODEL` env var ou `--model`), treinar o modelo de
+verdade depois.
+
+**Palmas (duas seguidas)**: sem biblioteca de reconhecimento de fala —
+amplitude ao longo do tempo, mesmo tipo de análise usada pro `speech`
+do barge-in. Linha de base de ruído ambiente ADAPTATIVA (EMA, só
+atualizada em frames QUIETOS — um clap não pode contaminar a própria
+referência que serviria pra detectar ele mesmo) + multiplicador
+relativo (pico precisa ser N vezes o ambiente) + piso absoluto +
+período refratário (evita contar a cauda/eco da mesma palma como uma
+segunda) + janela de tempo entre a 1ª e a 2ª palma do par. Validado
+rodando de verdade no mesmo processo que a wake-word (o usuário falou
+"hey jarvis" e bateu duas palmas, os dois detectados na mesma execução
+do `listener.py`).
+
+**Interface**: `#listenToggleBtn` (novo botão) liga/desliga a escuta
+contínua — ponto verde pulsante discreto no canto quando ativa (cor
+deliberadamente diferente do vermelho de "gravando agora", pra não
+confundir os dois estados). Ao disparar (wake ou clap), chama a MESMA
+função que o clique manual no microfone chamaria
+(`startVoiceInteraction()`, extraída do corpo do handler de clique
+pra ser reaproveitada) — nunca duplica o fluxo de gravação/transcrição/
+envio já existente.
+
+### Interromper a fala — `stopSpeaking()` em `@sarah/voice`
+
+Mata o processo `say` em andamento com **SIGKILL**, não SIGINT (que
+`Recorder.stop()` usa de propósito, pra `sox`/`rec` finalizar o
+cabeçalho do `.wav` corretamente) — `say` não produz nenhum arquivo
+pra corromper, então não há vantagem em usar um sinal "educado";
+SIGKILL para o áudio no instante exato em que é chamado, que é
+literalmente o comportamento pedido. Botão `#stopSpeakingBtn` só fica
+visível (`display: none` fora disso, não só invisível — pra não
+empurrar os outros controles) enquanto a SARAH está falando.
+
+**Barge-in (opcional, desligado por padrão)**: extensão natural
+proposta (não obrigatória) — o usuário falando ENQUANTO a SARAH fala
+interrompe automaticamente. Risco explícito, não resolvido: a própria
+voz da SARAH saindo pela caixa de som pode ser captada pelo microfone e
+interpretada como "fala do usuário" (sem AEC/cancelamento de eco
+acústico de verdade implementado, deliberadamente, por ser
+complexidade desproporcional ao pedido). Mitigado, não eliminado, com
+um debounce no lado Node: exige N ticks CONSEGUIDOS de VAD "speech"
+(dentro de uma janela máxima entre eles) antes de interromper de
+verdade — reduz falso-positivo de um pico isolado, não elimina o risco
+de eco constante em uso por caixa de som (sem fone). Fica desligado por
+padrão via checkbox (`#bargeInToggle`, desabilitado enquanto a escuta
+contínua está desligada).
+
+### Encerramento automático de gravação por silêncio — resolvido pelo mecanismo já existente da Fase 4
+
+Pedido à parte, feito depois do primeiro teste real do gatilho de
+escuta ("hoje ainda precisa clicar no microfone pra encerrar — isso
+deveria ser automático"): a hipótese inicial foi que o efeito
+`silence` do `sox`/`rec` (já em uso desde a Fase 4) não estava
+funcionando de verdade, e a direção tomada foi construir um watcher
+Python separado (`silence_watcher.py`, em
+`packages/wake-word/python/`) monitorando nível de áudio de forma
+independente — validado ISOLADAMENTE com áudio real (fala detectada
+em ~5,15s, silêncio de ~1,86s até encerrar, dentro da janela de
+1,5-2s pedida), mas nunca chegou a ser conectado ao fluxo real de
+gravação (`main-process.ts`/`sarah:startRecording`).
+
+**Testado de verdade no app real**: o efeito `silence` do sox/rec já
+resolve isso sozinho — a gravação encerra automaticamente sem clique
+manual, sem precisar do watcher separado. `silence_watcher.py` fica no
+repositório como registro de uma solução alternativa validada de forma
+isolada, mas não integrada — não é dead code por engano, é uma
+decisão registrada (a integração acabou sendo desnecessária).
+
+### Validação de ponta a ponta (rodando o app real, feita pelo usuário)
+
+- Falar "SARAH" sem tocar em nada inicia a gravação, igual ao clique
+  manual no microfone.
+- Bater duas palmas faz o mesmo.
+- Falar perto do microfone SEM nenhum dos dois gatilhos NÃO inicia
+  gravação à toa.
+- Pedir uma resposta longa e interromper pelo botão `#stopSpeakingBtn`
+  no meio para a fala imediatamente, sem esperar a frase terminar.
+- Gravação encerra sozinha depois de alguns segundos de silêncio
+  contínuo (mecanismo já existente da Fase 4), sem precisar clicar.
+
+Commit: `63531a2`.
+
+## Fase 10 — dashboard reorganizado por tema (v4)
+
+Mockup de referência enviado pelo usuário corrigindo um desbalanceamento
+de layout: a coluna direita tinha 3 cards pesados (categoria, atividade
+24h, erros) contra 2 na esquerda (integrações, risco), sobrando espaço
+vazio grande embaixo da esquerda — e o card de categoria mostrava as
+~18 categorias inteiras, cortando nome de tool pela metade, ilegível.
+
+- **Reorganização por TEMA, não por lado fixo**: coluna esquerda agora
+  é status (integrações, proporção de risco, erros recentes — `#panel-
+  errors` migrou da direita pra cá); direita é atividade (categoria,
+  atividade 24h). Card contado: 3 de cada lado, nenhum vazio grande
+  sobrando.
+- **"Atividade por categoria" limitada**: `TOP_CATEGORIES_LIMIT = 6` —
+  mostra só as 6 mais frequentes (`countByServer()`, `@sarah/audit`, já
+  vem ordenado por contagem decrescente — só precisou cortar), o resto
+  agregado numa linha final "outros (N categorias)" com a soma das
+  contagens, nunca descartado silenciosamente. Nome completo de cada
+  categoria disponível via tooltip (`title`) ao passar o mouse.
+- **"Erros recentes" limitado**: `MAX_ERROR_ROWS = 3` — alertas de
+  falha repetida primeiro (sinal mais urgente), depois erros isolados
+  recentes até completar 3, nunca repetindo a mesma tool nas duas
+  listas. Mensagem cortada em uma linha (`MAX_ERROR_MESSAGE_CHARS =
+  70`, sem quebra/espaço duplicado, "…" no fim se passar do limite) —
+  texto completo continua disponível no `title` (tooltip) do card.
+- Resto mantido como estava (esfera, cores, widget de status, controles
+  do rodapé), por pedido explícito.
+
+**Validado pelo usuário comparando a tela final do app real com o
+mockup de referência**: nenhuma coluna com espaço vazio grande
+sobrando, nenhum texto cortado ilegível. Commit: `63531a2` (mesmo
+commit da escuta contínua — mudanças concentradas nos mesmos arquivos
+de interface, `index.html`/`dashboard.js`).

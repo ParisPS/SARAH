@@ -1,4 +1,4 @@
-# SARAH — assistente pessoal local (Fases 0-9)
+# SARAH — assistente pessoal local (Fases 0-10)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -129,6 +129,27 @@ título, preço, loja e link. Tool própria e focada, não a `WebSearch`
 genérica do Agent SDK (que continua bloqueada). Baixo risco, só
 leitura — nunca inventa preço; lista vazia é resposta válida.
 
+## Fase 10 — escuta contínua, interromper a fala e dashboard reorganizado
+
+**Escuta contínua** (opcional, toggle explícito no rodapé): liga o
+microfone em segundo plano enquanto o app estiver aberto e inicia uma
+gravação automaticamente ao ouvir a wake-word ("SARAH") ou duas palmas
+seguidas — o resto do fluxo (gravar, transcrever, responder) é
+idêntico ao clique manual no microfone, que continua funcionando
+normalmente. Indicador visual discreto (ponto verde pulsante) mostra
+quando está ativa. A gravação continua encerrando sozinha depois de
+alguns segundos de silêncio, sem precisar clicar de novo.
+
+**Interromper a fala**: botão dedicado pra parar a resposta em voz
+imediatamente, a qualquer momento, sem esperar a frase terminar.
+Opcionalmente (checkbox à parte, desligado por padrão), o próprio
+usuário falando enquanto a SARAH fala já interrompe sozinho.
+
+**Dashboard reorganizado**: cards agrupados por tema (status à
+esquerda, atividade à direita), "Atividade por categoria" mostra só as
+6 mais frequentes com o resto agregado, "Erros recentes" limitado aos
+3 mais relevantes com descrição curta.
+
 ## Setup
 
 ```bash
@@ -165,6 +186,12 @@ cadastrado, o limite é de só 3 requisições por MINUTO (degrada pra
 busca por palavra-chave automaticamente, nunca quebra o app). Sem essa
 chave configurada, a memória funciona normalmente, só sem busca
 semântica/checagem de conflito.
+
+Pra Fase 10 (escuta contínua): `pnpm wake-word:setup` uma vez — cria
+um venv Python isolado (`packages/wake-word/.venv/`) e baixa os
+modelos do openWakeWord. Sem isso rodado, o toggle de escuta contínua
+simplesmente não liga (o resto do app funciona normal, incluindo o
+microfone manual).
 
 ## O que testar
 
@@ -221,6 +248,13 @@ mesmo sendo comandos inofensivos (encadear tira da allowlist).
 
 **Fase 9**: `quanto custa uma Air Fryer 4L` — busca preços reais na
 web, sem pedir confirmação (baixo risco).
+
+**Fase 10**: ligue a escuta contínua pelo botão no rodapé, fale
+"SARAH" sem tocar em nada — inicia a gravação sozinha; bata duas
+palmas — faz o mesmo. Peça algo que gere uma resposta longa e clique
+no botão de parar durante a fala — para imediatamente. Precisa de
+`pnpm wake-word:setup` rodado antes (venv Python isolado, ver Setup
+abaixo).
 
 A primeira chamada de cada integração do sistema (Calendar, Reminders,
 Notes, Contacts) mostra um diálogo do macOS pedindo permissão pro
