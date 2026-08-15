@@ -9,7 +9,8 @@
     "dev": "pnpm --filter cli dev",
     "gmail:auth": "tsx scripts/gmail-auth.ts",
     "github:auth": "tsx scripts/github-auth.ts",
-    "figma:auth": "tsx scripts/figma-auth.ts"
+    "figma:auth": "tsx scripts/figma-auth.ts",
+    "wake-word:setup": "bash scripts/wake-word-setup.sh"
   },
   "dependencies": {
     "@sarah/gmail": "workspace:*",

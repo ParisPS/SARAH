@@ -11,6 +11,7 @@
     "@sarah/core": "workspace:*",
     "@sarah/permissions": "workspace:*",
     "@sarah/voice": "workspace:*",
+    "@sarah/wake-word": "workspace:*",
     "three": "^0.185.1"
   },
   "devDependencies": {

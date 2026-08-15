@@ -129,16 +129,37 @@ function renderRisk(container, riskCounts) {
   container.append(wrap, legend);
 }
 
+// Dashboard v4 (mockup de referência): mostrar as ~18 categorias
+// inteiras cortava nome de tool pela metade, ilegível, além de deixar
+// o card ENORME (desbalanceando a coluna com o resto). `countByServer()`
+// (@sarah/audit) já devolve ordenado por contagem decrescente — só
+// precisa cortar aqui. O resto vira uma linha "outros (N categorias)"
+// agregada (soma das contagens), não simplesmente descartado.
+const TOP_CATEGORIES_LIMIT = 6;
+
 function renderCategories(container, categoryCounts) {
   container.innerHTML = "";
   if (!categoryCounts || categoryCounts.length === 0) {
     container.appendChild(el("div", "empty-panel", "nenhuma ação registrada ainda"));
     return;
   }
-  const max = Math.max(...categoryCounts.map((c) => c.count));
-  for (const cat of categoryCounts) {
+
+  const top = categoryCounts.slice(0, TOP_CATEGORIES_LIMIT);
+  const rest = categoryCounts.slice(TOP_CATEGORIES_LIMIT);
+  const rows = rest.length > 0
+    ? [...top, { server: `outros (${rest.length} categorias)`, count: rest.reduce((sum, c) => sum + c.count, 0), isOther: true }]
+    : top;
+
+  const max = Math.max(...rows.map((c) => c.count));
+  for (const cat of rows) {
     const row = el("div", "category-row");
-    row.appendChild(el("span", "label", cat.server.replace("sarah-", "")));
+    const labelText = cat.isOther ? cat.server : cat.server.replace("sarah-", "");
+    const labelEl = el("span", "label", labelText);
+    // Nome completo via tooltip (pedido como "se for fácil de
+    // adicionar" — já temos o valor cru, então só um atributo a mais).
+    // "outros" não tem um nome único pra mostrar, então não ganha title.
+    if (!cat.isOther) labelEl.title = labelText;
+    row.appendChild(labelEl);
     const track = el("div", "track");
     const fill = el("div", "fill");
     fill.style.width = `${(cat.count / max) * 100}%`;
@@ -212,39 +233,62 @@ function renderActivity(container, hourlyActivity) {
  * chamado depois de cada turno) — é o canal visual mais "proativo"
  * possível numa UI pull-based, sem inventar notificação nova do zero.
  */
+// Dashboard v4: painel não pode crescer sem fim (era a lista inteira
+// de `recentErrors`, hoje até 5 vindos do backend — ver
+// `packages/core/src/index.ts`) nem mostrar o texto de erro CRU
+// completo (mensagens de API costumam ter várias linhas/JSON solto).
+// Mostra só os 3 mais relevantes: alertas de falha repetida primeiro
+// (são o sinal mais urgente), depois erros isolados recentes até
+// completar 3 — nunca repete a MESMA tool nas duas listas.
+const MAX_ERROR_ROWS = 3;
+const MAX_ERROR_MESSAGE_CHARS = 70;
+
+/** Uma linha só, sem quebra/espaço duplicado, cortada com "…" se passar do limite — nunca o texto cru completo. */
+function shortenErrorMessage(message) {
+  const oneLine = String(message ?? "").replace(/\s+/g, " ").trim();
+  if (oneLine.length <= MAX_ERROR_MESSAGE_CHARS) return oneLine;
+  return `${oneLine.slice(0, MAX_ERROR_MESSAGE_CHARS - 1)}…`;
+}
+
 function renderErrors(container, recentErrors, repeatedFailures) {
   container.innerHTML = "";
 
-  if (repeatedFailures && repeatedFailures.length > 0) {
-    for (const failure of repeatedFailures) {
+  const failures = repeatedFailures ?? [];
+  const failureToolNames = new Set(failures.map((f) => f.toolName));
+  const errors = (recentErrors ?? []).filter((e) => !failureToolNames.has(e.toolName));
+
+  const rows = [
+    ...failures.map((f) => ({ kind: "failure", data: f })),
+    ...errors.map((e) => ({ kind: "error", data: e })),
+  ].slice(0, MAX_ERROR_ROWS);
+
+  if (rows.length === 0) {
+    container.appendChild(el("div", "empty-panel", "nenhum erro registrado"));
+    return;
+  }
+
+  for (const { kind, data } of rows) {
+    if (kind === "failure") {
       const alert = el("div", "repeated-failure-alert");
       alert.appendChild(el("span", "dot"));
       const content = el("div", "content");
       content.appendChild(
-        el("div", "tool", `${failure.count}× seguidas — ${failure.toolName.replace(/^mcp__/, "").replace(/__/g, " · ")}`)
+        el("div", "tool", `${data.count}× seguidas — ${data.toolName.replace(/^mcp__/, "").replace(/__/g, " · ")}`)
       );
-      content.appendChild(el("div", "message", failure.lastError));
+      content.appendChild(el("div", "message", shortenErrorMessage(data.lastError)));
       alert.appendChild(content);
-      alert.title = `${new Date(failure.lastTimestamp).toLocaleString("pt-BR")} — ${failure.lastError}`;
+      alert.title = `${new Date(data.lastTimestamp).toLocaleString("pt-BR")} — ${data.lastError}`;
       container.appendChild(alert);
+    } else {
+      const row = el("div", "error-row");
+      row.appendChild(el("span", "dot"));
+      const content = el("div", "content");
+      content.appendChild(el("div", "tool", data.toolName.replace(/^mcp__/, "").replace(/__/g, " · ")));
+      content.appendChild(el("div", "message", shortenErrorMessage(data.errorMessage)));
+      row.appendChild(content);
+      row.title = `${new Date(data.timestamp).toLocaleString("pt-BR")} — ${data.errorMessage}`;
+      container.appendChild(row);
     }
-  }
-
-  if (!recentErrors || recentErrors.length === 0) {
-    if (!repeatedFailures || repeatedFailures.length === 0) {
-      container.appendChild(el("div", "empty-panel", "nenhum erro registrado"));
-    }
-    return;
-  }
-  for (const err of recentErrors) {
-    const row = el("div", "error-row");
-    row.appendChild(el("span", "dot"));
-    const content = el("div", "content");
-    content.appendChild(el("div", "tool", err.toolName.replace(/^mcp__/, "").replace(/__/g, " · ")));
-    content.appendChild(el("div", "message", err.errorMessage));
-    row.appendChild(content);
-    row.title = `${new Date(err.timestamp).toLocaleString("pt-BR")} — ${err.errorMessage}`;
-    container.appendChild(row);
   }
 }
 

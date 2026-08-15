@@ -58,4 +58,36 @@ contextBridge.exposeInMainWorld("sarah", {
    */
   weather: () => ipcRenderer.invoke("sarah:weather"),
   openLink: (link) => ipcRenderer.invoke("sarah:openLink", link),
+  /**
+   * Interromper a fala (Fase 10) — mata o `say` em andamento
+   * imediatamente. Devolve `{ok: true}` sempre (seguro chamar mesmo
+   * sem fala nenhuma em andamento, vira no-op do lado do processo
+   * principal).
+   */
+  stopSpeaking: () => ipcRenderer.invoke("sarah:stopSpeaking"),
+  /**
+   * Escuta contínua (Fase 10, ver @sarah/wake-word): `startContinuousListening(bargeIn)`
+   * liga o microfone em segundo plano (wake-word + palmas, e VAD
+   * também se `bargeIn` for `true`); `stopContinuousListening` desliga.
+   * Os gatilhos chegam via `onVoiceTrigger` (evento, não invoke — pode
+   * disparar a qualquer momento, sem o renderer ter pedido nada
+   * naquele instante), que devolve uma função de CANCELAR a inscrição
+   * (mesmo padrão de `ipcRenderer.on`/`removeListener` de sempre nesse
+   * tipo de assinatura, pra não vazar listener se o renderer recarregar).
+   * `onVoiceTriggerError` avisa de queda FATAL da escuta contínua (ex.:
+   * processo Python morreu sozinho) — a UI precisa destravar o toggle
+   * nesse caso, já que a escuta parou sem o usuário ter pedido.
+   */
+  startContinuousListening: (bargeIn) => ipcRenderer.invoke("sarah:startContinuousListening", bargeIn),
+  stopContinuousListening: () => ipcRenderer.invoke("sarah:stopContinuousListening"),
+  onVoiceTrigger: (callback) => {
+    const listener = (_event, voiceEvent) => callback(voiceEvent);
+    ipcRenderer.on("sarah:voiceTrigger", listener);
+    return () => ipcRenderer.removeListener("sarah:voiceTrigger", listener);
+  },
+  onVoiceTriggerError: (callback) => {
+    const listener = (_event, message) => callback(message);
+    ipcRenderer.on("sarah:voiceTriggerError", listener);
+    return () => ipcRenderer.removeListener("sarah:voiceTriggerError", listener);
+  },
 });

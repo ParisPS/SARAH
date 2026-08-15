@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import type { ConfirmFn } from "@sarah/permissions";
-import { startRecording, transcribe, speak, type Recorder } from "@sarah/voice";
+import { startRecording, transcribe, speak, stopSpeaking, type Recorder } from "@sarah/voice";
+import { startContinuousListening, type ContinuousListener } from "@sarah/wake-word";
 import { spawnSarahDaemon, type SarahDaemon, type ToolUsage } from "./sarah-daemon.js";
 
 /**
@@ -145,6 +146,18 @@ const conversationLog: ConversationEntry[] = [];
  */
 let activeRecorder: Recorder | null = null;
 let pendingRecordingResult: Promise<{ ok: boolean; text?: string; language?: string; error?: string }> | null = null;
+
+/**
+ * Escuta contínua (Fase 10, ver @sarah/wake-word) — no máximo UMA
+ * instância do processo Python de vida longa por vez; o toggle da
+ * interface (`sarah:startContinuousListening`/`stopContinuousListening`)
+ * garante isso, mas o processo principal confere de novo, mesmo
+ * padrão defensivo já usado pra `activeRecorder`. `null` = escuta
+ * contínua desligada (estado padrão ao abrir o app — não persiste
+ * entre sessões, mesmo espírito do toggle PT/EN, que também sempre
+ * reinicia em "pt").
+ */
+let continuousListener: ContinuousListener | null = null;
 
 /**
  * Ícone de Tray gerado em código (um círculo preto simples, 18x18,
@@ -480,6 +493,54 @@ app.whenReady().then(() => {
   });
 
   /**
+   * Interromper a fala (Fase 10) — mata o `say` em andamento agora
+   * mesmo (ver `stopSpeaking()` em @sarah/voice pro porquê de SIGKILL
+   * em vez de um sinal educado). A Promise que `sarah:speak` devolveu
+   * resolve sozinha logo em seguida (o processo `say` morto dispara o
+   * evento `close` normal) — este handler não precisa fazer mais nada
+   * além de matar o processo.
+   */
+  ipcMain.handle("sarah:stopSpeaking", async () => {
+    stopSpeaking();
+    return { ok: true };
+  });
+
+  /**
+   * Escuta contínua (Fase 10, ver @sarah/wake-word pro mecanismo
+   * completo — processo Python de vida longa, wake-word + palmas +
+   * VAD opcional pro barge-in). Eventos chegam aqui como callback
+   * (`onEvent`/`onError`) e são só REPASSADOS pro renderer via
+   * `sarah:voiceTrigger` — decidir o que fazer com cada evento (gravar,
+   * interromper a fala) é responsabilidade da UI, não deste processo
+   * principal (mesma separação de sempre: main-process só encana IPC/
+   * processos do sistema, a LÓGICA de interação mora no renderer).
+   */
+  ipcMain.handle("sarah:startContinuousListening", async (_event, bargeIn: unknown) => {
+    if (continuousListener) return { ok: false, error: "Escuta contínua já está ativa." };
+    continuousListener = startContinuousListening({
+      bargeIn: bargeIn === true,
+      onEvent: (voiceEvent) => {
+        win?.webContents.send("sarah:voiceTrigger", voiceEvent);
+      },
+      onError: (message) => {
+        // Erro fatal (venv não configurado, processo morreu sozinho) —
+        // desliga o estado local E avisa o renderer, que precisa
+        // destravar o toggle da interface (senão ficaria mostrando
+        // "ativa" pra uma escuta que já morreu).
+        continuousListener = null;
+        win?.webContents.send("sarah:voiceTriggerError", message);
+      },
+    });
+    return { ok: true };
+  });
+
+  ipcMain.handle("sarah:stopContinuousListening", async () => {
+    continuousListener?.stop();
+    continuousListener = null;
+    return { ok: true };
+  });
+
+  /**
    * Widget de status (Fase 4 parte 2, etapa 2, ajuste 3 — reescrito
    * depois de um achado real testando com o usuário). Versão original
    * pedia a localização via `navigator.geolocation` no renderer (Core
@@ -607,6 +668,12 @@ let shuttingDown = false;
 
 app.on("before-quit", (event) => {
   isQuitting = true;
+  // Fase 10: encerra o processo Python de escuta contínua, se estiver
+  // ativo — ele não segura a saída do app (diferente de `daemon.stop()`
+  // abaixo, que é esperado de verdade), só evita deixar um processo
+  // com o microfone aberto pra trás depois que a janela já sumiu.
+  continuousListener?.stop();
+  continuousListener = null;
   if (shuttingDown || !daemon) return;
   event.preventDefault();
   shuttingDown = true;

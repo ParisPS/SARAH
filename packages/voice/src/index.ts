@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -112,20 +112,57 @@ export async function transcribe(audioPath: string): Promise<TranscribeResult> {
 }
 
 /**
+ * Processo `say` em andamento (Fase 10: interromper a fala) — no
+ * máximo UM por vez, mesma garantia que `speak()` já tinha na prática
+ * (quem chama espera a Promise anterior resolver antes de falar de
+ * novo). Guardado em módulo, não devolvido pra quem chama `speak()`,
+ * porque `stopSpeaking()` precisa alcançar o processo de QUALQUER
+ * lugar (o botão de interromper na interface não tem — nem deveria
+ * ter — uma referência direta à Promise que `speak()` devolveu).
+ */
+let activeSpeechProcess: ChildProcess | null = null;
+
+/**
  * Fala um texto em voz alta, na voz certa pro idioma de SAÍDA
  * selecionado (toggle da interface) — sempre toca direto nos
  * alto-falantes (sem arquivo intermediário). Resolve só quando o
- * `say` termina de falar, pra quem chamar poder esperar antes de
- * liberar a interface pra um novo pedido (evita duas falas
- * sobrepostas).
+ * `say` termina de falar (naturalmente OU interrompido por
+ * `stopSpeaking()` — os dois casos disparam o mesmo evento `close` do
+ * processo filho, então não precisa de tratamento especial aqui), pra
+ * quem chamar poder esperar antes de liberar a interface pra um novo
+ * pedido (evita duas falas sobrepostas).
  */
 export async function speak(text: string, language: OutputLanguage): Promise<void> {
   const voice = VOICE_BY_LANGUAGE[language] ?? VOICE_BY_LANGUAGE.pt;
   return new Promise((resolve, reject) => {
     const child = spawn(SAY, ["-v", voice, text]);
-    child.on("error", (err) => reject(new Error(`Falha ao rodar say: ${err.message}`)));
-    child.on("close", () => resolve());
+    activeSpeechProcess = child;
+    child.on("error", (err) => {
+      if (activeSpeechProcess === child) activeSpeechProcess = null;
+      reject(new Error(`Falha ao rodar say: ${err.message}`));
+    });
+    child.on("close", () => {
+      if (activeSpeechProcess === child) activeSpeechProcess = null;
+      resolve();
+    });
   });
+}
+
+/**
+ * Interrompe a fala em andamento IMEDIATAMENTE (Fase 10) — mata o
+ * processo `say` com SIGKILL, sem esperar a frase atual terminar.
+ * Diferente de `Recorder.stop()` (que usa SIGINT de propósito, pra
+ * `sox`/`rec` finalizar o cabeçalho do `.wav` direito): `say` não
+ * produz nenhum arquivo pra corromper, então não há vantagem em usar
+ * um sinal "educado" — SIGKILL pára o áudio no exato instante em que
+ * é chamado, que é o comportamento pedido ("mata o processo `say` em
+ * andamento imediatamente, sem esperar a frase terminar"). Segura
+ * chamar mesmo sem nenhuma fala em andamento (vira no-op).
+ */
+export function stopSpeaking(): void {
+  if (activeSpeechProcess && activeSpeechProcess.exitCode === null && activeSpeechProcess.signalCode === null) {
+    activeSpeechProcess.kill("SIGKILL");
+  }
 }
 
 export interface Recorder {

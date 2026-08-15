@@ -4,3 +4,9 @@ data/
 dist/
 *.log
 .DS_Store
+# Fase 10 (escuta contínua): venv Python isolado do openWakeWord —
+# nunca comitado, mesmo espírito de node_modules/ (recriável via
+# `pnpm wake-word:setup`, ver docs/architecture.md).
+packages/wake-word/.venv/
+__pycache__/
+*.pyc

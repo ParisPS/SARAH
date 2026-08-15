@@ -794,6 +794,79 @@
         }
       }
 
+      /* Escuta contínua (Fase 10) — toggle separado do microfone
+         manual (que continua funcionando exatamente como antes). Cor
+         VERDE/teal de propósito, diferente do vermelho de "gravando
+         agora" (#micBtn.recording) e do azul de acento padrão — é um
+         estado de fundo ("ouvindo em segundo plano"), não uma ação em
+         andamento. Ponto pulsante discreto no canto, não o botão
+         inteiro pulsando (isso ficaria parecido demais com "gravando",
+         confundindo os dois estados). */
+      #listenToggleBtn.active {
+        border-color: #34d399;
+        color: #34d399;
+        position: relative;
+      }
+      #listenToggleBtn.active::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #34d399;
+        animation: listen-dot-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes listen-dot-pulse {
+        0%,
+        100% {
+          opacity: 1;
+          box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.55);
+        }
+        50% {
+          opacity: 0.7;
+          box-shadow: 0 0 0 4px rgba(52, 211, 153, 0);
+        }
+      }
+
+      /* Interromper a fala (Fase 10) — só existe visualmente ENQUANTO
+         a SARAH está falando (classe `.visible`, controlada pelo
+         renderer); o resto do tempo fica fora do fluxo do layout
+         (`display: none`), não só invisível, pra não empurrar os
+         outros controles quando aparece/some. Vermelho — mesma
+         linguagem de "parar algo em andamento" que `#micBtn.recording`
+         já usa, mas sem pulsar (não é um estado contínuo tipo gravação,
+         é uma ação instantânea de um clique). */
+      #stopSpeakingBtn {
+        display: none;
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+      #stopSpeakingBtn.visible {
+        display: flex;
+      }
+      #stopSpeakingBtn:hover {
+        background: #3a0f14;
+      }
+
+      /* Barge-in (Fase 10, opcional) — checkbox pequeno, só relevante
+         com a escuta contínua ligada (desabilitado o resto do tempo,
+         não escondido — deixa claro que a opção EXISTE mesmo quando
+         não pode ser usada agora). */
+      #bargeInToggle {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 10px;
+        color: #6b87ae;
+        flex-shrink: 0;
+        user-select: none;
+      }
+      #bargeInToggle input:disabled + span {
+        opacity: 0.4;
+      }
+
       #promptInput {
         width: 0;
         min-width: 0;
@@ -868,6 +941,13 @@
     </div>
 
     <div id="top">
+      <!-- Fase 10 (dashboard v4): colunas reorganizadas por TEMA, não
+           por lado fixo — esquerda = status (integrações/risco/erros),
+           direita = atividade (categoria/recente). Antes a direita
+           tinha 3 cards pesados e a esquerda só 2, sobrando vazio
+           grande embaixo da esquerda; balanceava mal com o conteúdo
+           real. `panel-errors` migrou pra cá, ver docs/architecture.md
+           pro antes/depois comparado com o mockup de referência. -->
       <div class="dash-col dash-col-left">
         <div class="panel" id="panel-integrations">
           <h2>Status das integrações</h2>
@@ -875,6 +955,10 @@
         </div>
         <div class="panel" id="panel-risk">
           <h2>Proporção de risco</h2>
+          <div class="body"></div>
+        </div>
+        <div class="panel" id="panel-errors">
+          <h2>Erros recentes</h2>
           <div class="body"></div>
         </div>
       </div>
@@ -892,10 +976,6 @@
         </div>
         <div class="panel" id="panel-activity">
           <h2>Atividade recente (24h)</h2>
-          <div class="body"></div>
-        </div>
-        <div class="panel" id="panel-errors">
-          <h2>Erros recentes</h2>
           <div class="body"></div>
         </div>
       </div>
@@ -932,6 +1012,24 @@
           <line x1="8" y1="22" x2="16" y2="22"></line>
         </svg>
       </button>
+      <!-- Fase 10: parar a fala — só visível enquanto a SARAH está falando (ver renderer.js). -->
+      <button id="stopSpeakingBtn" class="icon-btn" title="Parar de falar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+        </svg>
+      </button>
+      <!-- Fase 10: escuta contínua (wake-word "SARAH" + duas palmas) — liga/desliga o microfone em segundo plano. -->
+      <button id="listenToggleBtn" class="icon-btn" title="Escuta contínua (diga 'SARAH' ou bata duas palmas)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 10a9 9 0 0 1 18 0"></path>
+          <path d="M6.5 12a5.5 5.5 0 0 1 11 0"></path>
+          <circle cx="12" cy="17" r="2"></circle>
+        </svg>
+      </button>
+      <label id="bargeInToggle" title="Quando a SARAH estiver falando e você começar a falar, interrompe automaticamente (experimental — pode reagir à própria voz da SARAH vinda da caixa de som)">
+        <input type="checkbox" id="bargeInCheckbox" disabled />
+        <span>interromper ao falar</span>
+      </label>
       <div id="langToggle">
         <button class="lang-btn active" data-lang="pt">PT</button>
         <button class="lang-btn" data-lang="en">EN</button>

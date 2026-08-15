@@ -14,6 +14,10 @@ const langButtons = Array.from(document.querySelectorAll(".lang-btn"));
 const coreTaskEl = document.getElementById("core-task");
 const stageContent = document.getElementById("stage-content");
 const STAGE_HINT = stageContent.textContent.trim();
+// Fase 10 — escuta contínua / interromper a fala.
+const stopSpeakingBtn = document.getElementById("stopSpeakingBtn");
+const listenToggleBtn = document.getElementById("listenToggleBtn");
+const bargeInCheckbox = document.getElementById("bargeInCheckbox");
 
 initStatusWidget();
 
@@ -190,11 +194,17 @@ function showStageResponse(text) {
 
 let busy = false; // true durante ask()+speak() — não durante a gravação em si (o próprio botão precisa continuar clicável pra parar)
 let recording = false;
+let speaking = false; // Fase 10: true só durante o trecho de `speak()` — controla a visibilidade do botão de parar
 
 function updateControlsDisabled() {
   input.disabled = busy || recording;
   textToggleBtn.disabled = busy || recording;
   micBtn.disabled = busy;
+}
+
+function setSpeaking(value) {
+  speaking = value;
+  stopSpeakingBtn.classList.toggle("visible", value);
 }
 
 /**
@@ -233,7 +243,18 @@ async function sendPrompt(prompt) {
 
     if (responseText) {
       showStageResponse(responseText);
-      await window.sarah.speak(sanitizeForSpeech(responseText), outputLanguage);
+      setSpeaking(true);
+      try {
+        // Fase 10: `speak()` resolve tanto quando a fala termina
+        // sozinha quanto quando é interrompida (`stopSpeaking()` mata
+        // o processo `say`, que dispara o mesmo evento de término do
+        // lado do processo principal — ver @sarah/voice) — não precisa
+        // distinguir os dois casos aqui, os dois liberam a interface
+        // normalmente.
+        await window.sarah.speak(sanitizeForSpeech(responseText), outputLanguage);
+      } finally {
+        setSpeaking(false);
+      }
     } else {
       showStageHint();
     }
@@ -283,42 +304,160 @@ input.addEventListener("blur", () => {
 // @sarah/voice) OU no clique 2 (parar manualmente) — os dois casos
 // resolvem a MESMA `awaitRecording()`, então o fluxo abaixo não
 // precisa saber qual dos dois aconteceu.
-micBtn.addEventListener("click", async () => {
-  if (!recording) {
-    recording = true;
-    micBtn.classList.add("recording");
-    micBtn.title = "Parar gravação";
-    updateControlsDisabled();
-    hologram.setState("listening");
-    showStageStatus("🎙 ouvindo...");
+//
+// Fase 10: extraído pra função nomeada (era só o corpo do listener de
+// clique) — a escuta contínua (wake-word "SARAH"/duas palmas, ver
+// `handleVoiceTrigger` mais abaixo) precisa disparar EXATAMENTE este
+// mesmo fluxo, "como se o botão tivesse sido clicado" (pedido
+// explícito), não uma cópia paralela que poderia divergir com o tempo.
+async function startVoiceInteraction() {
+  if (recording) {
+    // Já gravando (clique manual de novo, ou um gatilho repetido
+    // enquanto a gravação anterior ainda não terminou) — mesmo
+    // comportamento de sempre do botão: um segundo acionamento PARA a
+    // gravação em vez de começar outra.
+    window.sarah.stopRecording();
+    return;
+  }
 
-    const started = await window.sarah.startRecording();
-    if (!started.ok) {
-      recording = false;
-      micBtn.classList.remove("recording");
-      micBtn.title = "Falar";
-      updateControlsDisabled();
-      hologram.setState("idle");
-      showStageHint();
-      return;
-    }
+  recording = true;
+  micBtn.classList.add("recording");
+  micBtn.title = "Parar gravação";
+  updateControlsDisabled();
+  hologram.setState("listening");
+  showStageStatus("🎙 ouvindo...");
 
-    const result = await window.sarah.awaitRecording();
+  const started = await window.sarah.startRecording();
+  if (!started.ok) {
     recording = false;
     micBtn.classList.remove("recording");
     micBtn.title = "Falar";
     updateControlsDisabled();
+    hologram.setState("idle");
+    showStageHint();
+    return;
+  }
 
-    if (result.ok && result.text && result.text.trim()) {
-      await sendPrompt(result.text.trim());
-    } else {
-      hologram.setState("idle");
-      showStageHint();
-    }
+  const result = await window.sarah.awaitRecording();
+  recording = false;
+  micBtn.classList.remove("recording");
+  micBtn.title = "Falar";
+  updateControlsDisabled();
+
+  if (result.ok && result.text && result.text.trim()) {
+    await sendPrompt(result.text.trim());
   } else {
-    // Parar manualmente — `awaitRecording()` já pendurado acima
-    // resolve sozinho assim que o processo principal detectar o fim
-    // da gravação, não precisa esperar nada aqui.
-    window.sarah.stopRecording();
+    hologram.setState("idle");
+    showStageHint();
+  }
+}
+
+micBtn.addEventListener("click", startVoiceInteraction);
+
+// --- interromper a fala (Fase 10) -------------------------------------
+stopSpeakingBtn.addEventListener("click", () => {
+  window.sarah.stopSpeaking();
+  // `setSpeaking(false)` já vai acontecer sozinho quando a Promise de
+  // `speak()` resolver (ver `sendPrompt`, o `finally`) — chamado aqui
+  // TAMBÉM, direto, só pra sumir com o botão na hora do clique, sem
+  // esperar a viagem de IPC de ida e volta (diferença de poucos ms na
+  // prática, mas feedback instantâneo importa pra um botão de "parar").
+  setSpeaking(false);
+});
+
+// --- escuta contínua (Fase 10) -----------------------------------------
+// Wake-word ("SARAH", ou o placeholder "hey jarvis" até o modelo
+// customizado existir — ver docs/architecture.md) + duas palmas
+// seguidas, via @sarah/wake-word (processo Python separado). NÃO liga
+// sozinha ao abrir o app — sempre precisa ser ativada aqui, decisão
+// explícita ("não obrigatória pra sempre").
+let continuousListening = false;
+
+/**
+ * Barge-in (Fase 10, opcional/experimental): interrompe a fala
+ * automaticamente quando a SARAH está falando E o usuário começa a
+ * falar. Só age depois de `SPEECH_TICKS_TO_INTERRUPT` eventos "speech"
+ * SEGUIDOS (cada um representa ~100ms de voz detectada pelo VAD do
+ * lado Python, ver `listener.py`) dentro de uma janela curta — um
+ * único blip não interrompe nada, precisa de voz SUSTENTADA. Isso é
+ * mitigação parcial pro risco descrito no pedido original (a própria
+ * voz da SARAH saindo da caixa de som e sendo captada pelo microfone
+ * de volta) — NÃO é cancelamento de eco de verdade (isso exigiria um
+ * algoritmo de AEC de verdade, complexidade desproporcional ao pedido
+ * — "só propõe se for extensão natural sem complexidade
+ * desproporcional"), é só reduzir a chance de um falso positivo curto.
+ * Risco real que continua existindo, documentado em
+ * docs/architecture.md: em alto-falantes (não fone de ouvido), a
+ * própria fala da SARAH pode, em tese, ser sustentada o bastante pra
+ * disparar isso sozinha — por isso o toggle fica DESLIGADO por padrão
+ * e o usuário escolhe ligar.
+ */
+const SPEECH_TICKS_TO_INTERRUPT = 4;
+const SPEECH_TICK_MAX_GAP_MS = 500;
+let speechTickCount = 0;
+let lastSpeechTickAt = 0;
+
+function handleVoiceTrigger(event) {
+  if (event.type === "wake" || event.type === "clap") {
+    if (busy || recording) return; // já ocupada — mesmo guard que o clique manual já respeitava implicitamente (botão desabilitado)
+    startVoiceInteraction();
+    return;
+  }
+  if (event.type === "speech") {
+    if (!speaking || !bargeInCheckbox.checked) {
+      speechTickCount = 0;
+      return;
+    }
+    const now = Date.now();
+    speechTickCount = now - lastSpeechTickAt <= SPEECH_TICK_MAX_GAP_MS ? speechTickCount + 1 : 1;
+    lastSpeechTickAt = now;
+    if (speechTickCount >= SPEECH_TICKS_TO_INTERRUPT) {
+      speechTickCount = 0;
+      window.sarah.stopSpeaking();
+      setSpeaking(false);
+    }
+  }
+}
+
+window.sarah.onVoiceTrigger(handleVoiceTrigger);
+window.sarah.onVoiceTriggerError((message) => {
+  console.error("[escuta contínua]", message);
+  continuousListening = false;
+  listenToggleBtn.classList.remove("active");
+  bargeInCheckbox.disabled = true;
+});
+
+listenToggleBtn.addEventListener("click", async () => {
+  if (continuousListening) {
+    await window.sarah.stopContinuousListening();
+    continuousListening = false;
+    listenToggleBtn.classList.remove("active");
+    bargeInCheckbox.disabled = true;
+    return;
+  }
+  const result = await window.sarah.startContinuousListening(bargeInCheckbox.checked);
+  if (result.ok) {
+    continuousListening = true;
+    listenToggleBtn.classList.add("active");
+    bargeInCheckbox.disabled = false;
+  } else {
+    console.error("[escuta contínua]", result.error);
+  }
+});
+
+// O sinalizador de barge-in só é lido no MOMENTO em que o processo
+// Python é iniciado (ver `sarah:startContinuousListening`) — mudar o
+// checkbox com a escuta já ativa precisa reiniciar o processo pra
+// aplicar. Pequena interrupção de ~1s na escuta, aceitável (não é uma
+// mudança que o usuário faria repetidamente).
+bargeInCheckbox.addEventListener("change", async () => {
+  if (!continuousListening) return;
+  await window.sarah.stopContinuousListening();
+  const result = await window.sarah.startContinuousListening(bargeInCheckbox.checked);
+  if (!result.ok) {
+    console.error("[escuta contínua]", result.error);
+    continuousListening = false;
+    listenToggleBtn.classList.remove("active");
+    bargeInCheckbox.disabled = true;
   }
 });
