@@ -5621,3 +5621,175 @@ escrito, então não há nada pra reverter.
 implementado e validado de ponta a ponta (único entregável real); a
 frente de reservas foi pesquisada, proposta e conscientemente
 descartada — não é trabalho planejado nem pendência.**
+
+## Otimização de código: performance, custo de token e duplicação
+
+Primeira vez que se mexeu em código já validado e funcionando sem
+estar construindo algo novo — regressão aqui é silenciosa, podendo
+desfazer uma correção que já levou uma fase inteira de debug pra achar
+(o `vec0`/sqlite-vec da Fase 7, o bug de cache do schema do Notion).
+Por isso o pedido explícito foi: primeiro um LEVANTAMENTO sem mudar
+nada (medido, não chutado), classificado por RISCO × GANHO; só depois,
+com aprovação item a item, implementar — sempre com reteste de
+regressão antes de cada commit, não só na área tocada.
+
+Sem título de "Fase N" de propósito: o número 10 já está reivindicado
+por duas frentes em paralelo nesta sessão (escuta contínua/wake-word,
+ainda sem seção própria aqui; dashboard v4, também pendente) — este
+trabalho não compete por esse número, só é registrado na ordem em que
+aconteceu.
+
+### Levantamento (medido, não chutado)
+
+- **Performance**: `AuditLog.repeatedFailures()` rodava em TODO
+  `ask()` (não só no dashboard) fazendo N+1 queries. `countByServer()`
+  carregava a tabela `tool_calls` inteira pra agregar em JS, sem
+  LIMIT. Nenhuma tabela (`tool_calls`, `memories`) tinha índice — toda
+  leitura era full scan.
+- **Custo de token**: `systemPrompt` usa `preset: "claude_code"` +
+  `append` (decisão da Fase 2, ver seção "Injeção determinística de
+  preferências" acima) — o preset embute o system prompt padrão do
+  Claude Code (orientado a engenharia de software), mesmo a SARAH não
+  sendo um agente de código na maior parte do uso. As 32 descriptions
+  de tool somavam ~17,3k caracteres (~4,3k tokens estimados) enviadas
+  em todo turno como parte do schema.
+- **Qualidade/duplicação**: o padrão `{content: [{type: "text", text:
+  JSON.stringify({ok, ...})}]}` se repetia ~43 vezes em 10 pacotes —
+  e a duplicação já tinha derivado em inconsistência real (erro
+  não-`Error` virando a string `"undefined"` silenciosamente em
+  algumas cópias, não em outras).
+
+Cada oportunidade foi classificada e apresentada ao usuário antes de
+qualquer mudança; a aprovação veio item a item, na ordem abaixo.
+
+### Implementado (aprovado, validado, commitado)
+
+1. **Índices SQLite** (`packages/audit`, `packages/memory`) —
+   `CREATE INDEX IF NOT EXISTS` em `tool_calls(tool_use_id)`,
+   `tool_calls(status)`, `tool_calls(tool_name, id)` e
+   `memories(category)`. Puramente aditivo, sem mudar nenhum
+   resultado. Commit `4c8fcad`.
+2. **`countByServer()` agregado no SQL** — trocado `SELECT tool_name
+   FROM tool_calls` (todas as linhas) por `SELECT tool_name, COUNT(*)
+   GROUP BY tool_name` (só uma linha por tool distinta, nunca cresce
+   com o volume de chamadas). Achado durante a validação: a ordem de
+   EMPATES (mesma contagem) da versão anterior já não era garantida
+   pelo SQLite — dependia da ordem física de varredura, que muda
+   sozinha se um índice novo aparecer. Trocado por desempate alfabético
+   explícito, agora determinístico entre chamadas. Validado comparando
+   o multiset de resultado contra uma CÓPIA do banco de produção real
+   (nunca o arquivo original) — mesma soma total (320), nenhuma
+   exceção no restante do `dashboard()`. Commit `4c8fcad`.
+3. **`@sarah/tool-result`** (pacote novo, zero dependências) —
+   `okResult(data)`/`errorResult(err)` substituem as ~43 cópias do
+   padrão `{ok,error}` em facetime, gmail, memory (só os dois pontos
+   que eram DE VERDADE esse padrão — a resposta de conflito de
+   `memory.remember` e o retorno de `memory.forget` ficaram como
+   estavam, por serem formatos genuinamente diferentes), notion,
+   sandbox (index/graphics/slides/figma) e web-search.
+   apple-calendar/apple-contacts/apple-notes/apple-reminders ficam de
+   fora — só repassam o resultado já formatado pela ponte JXA, nunca
+   construíram esse padrão em TS. Validado: os 10 módulos tocados
+   carregam sem erro; `okResult`/`errorResult` testados contra todo
+   formato de entrada usado nos call sites reais; teste de ponta a
+   ponta do fluxo `remember`/`recall` contra uma CÓPIA do banco de
+   memória real, confirmando que `extractToolError` (`packages/core`)
+   continua reconhecendo sucesso/erro corretamente. Resultado: 18
+   arquivos, 167 inserções, 197 deleções — redução líquida real de
+   código. Commit `c09ddd3`.
+4. **`repeatedFailures()` em uma query só** — trocado o N+1 (uma query
+   `SELECT DISTINCT tool_name` + uma query por tool) por
+   `ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY id DESC)`,
+   pegando as últimas N linhas de cada tool numa única query; o
+   agrupamento por tool continua em JS, só que sobre um resultado já
+   filtrado pelo SQL. Validado: old vs new idênticos contra a cópia do
+   banco real em 5 thresholds diferentes (1/2/3/5/10); dataset
+   SINTÉTICO cobrindo os casos de borda da lógica original (limite
+   exato, tool abaixo do threshold, só as ÚLTIMAS N chamadas
+   importando mesmo com erro mais antigo fora da janela, tool nunca
+   observada) — todos passaram. Commit `a47b7fd`.
+5. **Descriptions mais enxutas** — as 5 maiores (`figma.export_assets`,
+   `sandbox.run_command`, `memory.remember`, `sandbox.create_project`,
+   `notion.create_event`) tiveram só prosa redundante cortada, nenhuma
+   regra de decisão removida (protocolo de conflito do `remember`,
+   allowlist/bug de encadeamento do `run_command`, aviso de cota do
+   Figma, regra de desambiguação Notion×Apple Calendar). Total das 32
+   descriptions: 17342 → 16709 caracteres. Validado RODANDO a Agent
+   SDK de verdade (`query()`, não suposição): script standalone com
+   `canUseTool` sempre NEGANDO — captura qual tool foi tentada e aborta
+   ANTES de qualquer execução real (zero efeito colateral, nenhum
+   evento/projeto criado de verdade). Três prompts testados: "marca uma
+   reunião amanhã" (sem calendário) → escolheu `sarah-notion` (padrão
+   correto); "no Apple Calendar" explícito → escolheu
+   `sarah-apple-calendar` (correto); "cria um site de portfólio" sem
+   mencionar Base44, e SEM o reforço de `BASE44_POLICY_TEXT` do core
+   (teste isolado, só a description) → escolheu `sarah-code` (correto,
+   sem tentar Base44). Commit `0db5428`.
+
+### Em espera: troca do preset `claude_code` do systemPrompt (não implementado)
+
+Maior ganho de custo de token do levantamento, mas também a única
+mudança que pode alterar comportamento OBSERVÁVEL de verdade — por
+isso, a pedido explícito, fica em espera até uma caracterização
+precisa (não "pode mudar", o QUÊ muda), sem implementar nada ainda.
+
+Caracterização, baseada em evidência extraída de verdade do binário
+do Claude Code instalado nesta máquina (`grep -a` no executável —
+`strings` não funciona aqui, Xcode Command Line Tools quebrado, ver
+`docs/DICAS.md`), não em suposição:
+
+- O preset abre com `"You are Claude Code, Anthropic's official CLI
+  for Claude, running within the Claude Agent SDK."`, seguido de uma
+  seção `# Tone and style` que declara explicitamente `"You are an
+  interactive agent that helps users with software engineering
+  tasks."` — a SARAH é descrita ao modelo, em TODO turno, como um
+  agente de engenharia de software, mesmo sendo um assistente pessoal
+  na maior parte do uso real.
+- Existe uma política de URL bem específica: `"IMPORTANT: You must
+  NEVER generate or guess URLs for the user unless you are confident
+  that the URLs are for helping the user with programming."` — hoje
+  isso deixa o modelo mais cauteloso pra INVENTAR/chutar uma URL fora
+  de contexto de programação (ex.: "manda o link do restaurante X") do
+  que seria sem o preset. Tirar o preset remove essa cautela sem
+  substituir por nada — se não for reescrita nos termos da SARAH,
+  fabricar uma URL errada fica mais provável, não menos.
+- A seção `# Committing changes with git`, extraída por completo, é a
+  parte mais claramente CARREGADA DE COMPORTAMENTO REAL: define um
+  protocolo inteiro pra `git commit` (rodar `git status`/`git diff`/
+  `git log` em paralelo, escrever mensagem seguindo o estilo do
+  repositório, só focar no "porquê") e uma lista de regras de
+  segurança — "NUNCA atualize a config do git", "NUNCA rode comando
+  destrutivo (`push --force`, `reset --hard`, `checkout .`, `restore
+  .`, `clean -f`, `branch -D`) a menos que pedido explicitamente",
+  "NUNCA pule hooks", "SEMPRE crie um commit NOVO em vez de `--amend`,
+  a menos que pedido", "prefira arquivos específicos a `git add -A`/
+  `.`", "NUNCA commite sem pedido explícito". `GIT_WORKFLOW_POLICY_TEXT`
+  (injetado pelo core) cobre uma coisa DIFERENTE e mais estreita
+  (disciplina de branch-antes-de-PR) — não repete NENHUMA dessas
+  regras. Ou seja: as tools `code.git_commit`/`code.git_push`/
+  `code.create_pull_request` (Fase 5/6) hoje herdam esse
+  comportamento de segurança/qualidade DE GRAÇA, do preset — tirar o
+  preset sem reescrever essas regras nos termos da SARAH é uma
+  REGRESSÃO real nessas tools específicas, não só "cortar boilerplate
+  sem uso".
+- Confirmada também a explicação de que tags `<system-reminder>` são
+  injetadas pelo sistema (não pelo usuário) e a convenção de saída em
+  Markdown — estabelece o formato de saída que o resto do projeto já
+  assume implicitamente.
+- Custo de token: não dá pra medir o tamanho exato daqui (o SDK não
+  devolve o texto final resolvido do preset pra quem chama `query()`)
+  — mas só as seções confirmadas acima (identidade, tom, política de
+  URL, git commit) já somam bem mais que as ~2080 caracteres (~520
+  tokens) dos TRÊS textos de política que o core injeta hoje
+  (`BASE44_POLICY_TEXT`+`GIT_WORKFLOW_POLICY_TEXT`+
+  `MEMORY_CONFLICT_POLICY_TEXT`) — e existe pelo menos mais uma seção
+  inteira (`# Doing tasks`) cujo título foi confirmado mas o conteúdo
+  não foi extraído.
+
+**Conclusão**: trocar o preset não é só "economizar tokens de graça" —
+exige DELIBERADAMENTE reescrever, nos termos da SARAH, pelo menos o
+protocolo de segurança de git (hoje só existe via preset, usado de
+verdade pelas tools `code.*`) e decidir se a cautela de URL deve ser
+portada. Sem isso, a troca implementaria uma regressão real em vez de
+uma limpeza. Decisão de seguir ou não fica com o usuário — nenhum
+código foi alterado nesta frente.
