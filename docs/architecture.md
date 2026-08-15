@@ -5496,3 +5496,120 @@ completa".
 **Fase 9 está completa** pro objetivo pedido (`web.search_price`,
 validado de ponta a ponta com dado real). O achado do `ToolSearch`
 fica como pendência nova, separada, pro usuário decidir o que fazer.
+
+## Fase 10 — pesquisa de viabilidade: reservas de restaurante e ingresso de museu (SÓ pesquisa/proposta, nada implementado)
+
+Pedido veio rotulado "Fase 9" pelo usuário, mas Fase 9 já era a busca
+de preços (seção acima) — renumerado pra Fase 10 aqui, sem perguntar
+(correção mecânica, sem ambiguidade real). Por pedido explícito, esta
+etapa é só pesquisa + proposta de arquitetura — nenhum código foi
+escrito.
+
+Escopo confirmado antes de pesquisar: reserva/ingresso pode envolver
+pagamento (museu quase sempre envolve, restaurante geralmente não pra
+reservar mesa em si) — mas a SARAH nunca lida com dado financeiro
+diretamente, mesmo princípio já seguido no projeto inteiro (Gmail
+nunca envia sozinho sem confirmação explícita de conteúdo, WhatsApp
+nunca simula envio fora da janela). Se pagamento for necessário, o
+usuário sempre finaliza sozinho.
+
+### Restaurante — nenhuma API de reserva acessível pra projeto pessoal existe
+
+Pesquisado direto nas fontes oficiais/documentação de cada provedor:
+
+- **OpenTable**: API só pra parceiros aprovados — não existe chave de
+  desenvolvedor auto-serviço pro lado do cliente/diner. Acesso exige
+  preencher formulário de parceria e passar por aprovação comercial.
+- **Resy**: mesma história — API só pra parceiros (POS, CRM,
+  fidelidade, descoberta) aprovados diretamente pelo time de parcerias
+  da Resy, sem portal de desenvolvedor público nem especificação
+  OpenAPI publicada. Achado lateral: a Amex está unificando o Tock
+  (outra plataforma que a Amex também é dona) dentro da Resy ao longo
+  de 2026 — a superfície de integração está em fluxo, reforça ainda
+  mais que não é hora de depender disso.
+- **Reserve with Google**: existe, mas é uma API pra você VIRAR uma
+  plataforma de reservas (tipo o próprio OpenTable) que gerencia
+  disponibilidade real de restaurantes com quem você tem relação
+  contratual direta — não é algo que um app pessoal chama em nome do
+  usuário pra reservar numa mesa de terceiro escolhida na hora.
+
+**Conclusão**: não existe nenhum caminho pra buscar disponibilidade
+real ou criar uma reserva de verdade num restaurante escolhido pelo
+usuário, de forma acessível a um projeto pessoal. Os três grandes
+players exigem virar parceiro comercial.
+
+### Museu/ingresso — ainda mais fragmentado, e com uma armadilha de nomenclatura
+
+- **Tiqets**: tem uma "Distributor/Content & Availability API"
+  (leitura — busca disponibilidade/preço) descrita como grátis e de
+  auto-cadastro no portal de afiliados. Mas a documentação não deixa
+  claro se um projeto PESSOAL (sem tráfego/conteúdo de viagem
+  publicado) seria aceito na prática — o público-alvo declarado é
+  agência de viagens, plataforma de benefícios corporativos, etc. A
+  API de COMPRA de fato (Booking API) exige claramente um mínimo de
+  ~200 pedidos/mês — inviável pra uso pessoal, ponto final.
+- **GetYourGuide**: Partner API existe (busca, disponibilidade, preço,
+  e até criação de reserva), mas "ir ao ar exige registro e
+  certificação em três fases" — é um projeto de integração, não troca
+  de chave. Mesmo problema de elegibilidade pra uso pessoal que o
+  Tiqets.
+- **Armadilha de nomenclatura encontrada pesquisando**: vários museus
+  grandes (Met, Rijksmuseum, Smithsonian, etc.) têm APIs públicas de
+  verdade — mas são APIs de ACERVO (metadado/imagem de obras de arte),
+  não de INGRESSO. Fácil confundir "esse museu tem API" com "dá pra
+  comprar ingresso por API" — não é o caso, são coisas completamente
+  diferentes.
+- **Cobertura**: mesmo Tiqets/GetYourGuide juntos só cobrem museus
+  turísticos que decidiram entrar nesses marketplaces — muitos museus
+  públicos/cívicos/gratuitos nem aparecem lá.
+
+**Conclusão**: pior que restaurante — nenhuma API de compra acessível
+pra uso pessoal, e mesmo a parte de leitura (buscar preço/
+disponibilidade) tem elegibilidade incerta e cobertura parcial.
+
+### Caminho funcional comum aos dois: Google Places API + "prepara, nunca simula"
+
+Como nenhum dos dois domínios tem uma API de reserva/compra real
+acessível a um projeto pessoal, os dois caem no mesmo fallback
+prático: **Google Places API (New)**, self-serve via Google Cloud
+Console (chave de API) — confirmado que precisa de cartão de crédito
+associado à conta de billing, mas com cota grátis mensal generosa por
+categoria de campo pedido (a doc oficial fala em milhares de chamadas
+grátis/mês por SKU, o valor exato por campo — Essentials vs. Pro —
+precisa ser conferido na hora de implementar, não afirmado aqui sem
+checar de novo). Uso realista de um assistente pessoal dificilmente
+chegaria perto do teto grátis.
+
+**Arquitetura proposta** (mesmo padrão "busca primeiro, depois ação"
+já usado pra Contacts → FaceTime — cliente HTTP compartilhado por
+baixo, mas tools do agente continuam ESTREITAS/focadas, nunca uma
+busca genérica de lugares):
+
+- `packages/places/src/client.ts`: wrapper fino da Places API (Text
+  Search + Place Details) — NÃO vira uma tool exposta direto pro
+  agente (evita reabrir "busca genérica sem escopo", mesmo princípio
+  da Fase 9).
+- `packages/restaurant`, tool `restaurant.prepare_reservation(query,
+  datetime, party_size)`: busca restaurantes de verdade (filtrado a
+  `type=restaurant`), devolve candidatos reais (nome, endereço,
+  telefone, site, horário, avaliação) + monta um "pacote de reserva"
+  (data/hora/nº de pessoas sugeridos, telefone/site pra o usuário
+  ligar ou reservar ele mesmo). NUNCA cria reserva nenhuma.
+- `packages/museum`, tool `museum.prepare_visit(query, date)`: mesma
+  estrutura, filtrado a `type=museum`/`tourist_attraction`. Cruzar com
+  a Content API da Tiqets (pra museus que estejam listados lá, com
+  preço de ingresso real) fica como possível EXTENSÃO futura opcional
+  — não faz parte desta proposta base, porque a elegibilidade de
+  cadastro é incerta e só se descobre tentando de verdade.
+- **Risco: BAIXO nos dois** — é busca + preparo de informação, nunca
+  uma ação real de reserva/compra/pagamento, mesmo princípio "SARAH
+  nunca lida com dado financeiro" já seguido no projeto inteiro.
+- **Setup pendente do usuário, se aprovado**: criar conta Google
+  Cloud, habilitar Places API (New), configurar billing (exige
+  cartão) — mesma categoria de decisão de custo/conta externa trazida
+  ao usuário antes de implementar em fases anteriores (Figma,
+  WhatsApp, Fase 9).
+
+**Fase 10 fica aqui: pesquisa e proposta completas, aguardando decisão
+do usuário sobre seguir (e com quais ajustes) antes de qualquer
+implementação.**
