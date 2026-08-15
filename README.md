@@ -220,13 +220,15 @@ e bugs reais encontrados está em [`docs/architecture.md`](docs/architecture.md)
   funcional — API REST (não Dev Mode MCP: essa rota foi tentada e
   abandonada por bloqueio de allowlist de cliente, ver
   `docs/architecture.md`) —, mas **BLOQUEADO NA PRÁTICA pelo rate
-  limit do plano gratuito do Figma** (~6 requisições/mês no total,
-  compartilhadas entre leitura de arquivo e exportação de imagem).
-  Código já otimizado pra minimizar chamadas (reaproveita IDs já
-  obtidos, agrupa exportação por formato numa única chamada, loga os
-  headers de rate limit). **Pendência explícita, não escondida**: dois
-  projetos reais do usuário prontos e parados esperando decisão sobre
-  upgrade pro plano Professional do Figma.
+  limit do plano gratuito (Starter) do Figma** (~6 requisições/mês no
+  total, compartilhadas entre leitura de arquivo e exportação de
+  imagem). Código já otimizado pra minimizar chamadas (reaproveita IDs
+  já obtidos, agrupa exportação por formato numa única chamada, loga
+  os headers de rate limit). **Decisão encerrada, não mais pendência**:
+  o usuário avaliou e decidiu NÃO fazer upgrade pro plano Professional
+  — Figma segue implementado e pausado no Starter por escolha; os dois
+  projetos reais que ficaram parados continuam parados, sem prazo pra
+  retomar.
 - **Imagem realista** (raster, via API paga tipo Flux/GPT Image/
   Firefly): avaliada, decisão CONSCIENTE do usuário foi não seguir por
   enquanto — registrada como decisão, não como esquecimento.
@@ -373,8 +375,9 @@ de credencial (token do Gmail expira a cada ~7 dias, PAT do GitHub sem
 expiração rastreada — hoje só se descobre quando uma chamada falha de
 verdade); extensão da nuance de risco médio pras outras tools do
 sandbox (`write_file`, `git_commit`, etc. continuam baixo risco, de
-propósito — "primeira tool, não todas de uma vez"); decisão sobre
-upgrade do plano do Figma (Fase 5) continua em aberto.
+propósito — "primeira tool, não todas de uma vez"). O upgrade do plano
+do Figma (Fase 5) **não é mais pendência** — o usuário decidiu não
+fazer upgrade; ver seção da Fase 8 abaixo.
 
 **O que este código NÃO faz ainda (de propósito):** merge de Pull
 Request (sempre manual, pelo GitHub — decisão deliberada da Fase 6,
@@ -384,7 +387,7 @@ seguir por enquanto), rastreamento de expiração de credencial e nuance
 de risco médio pras tools além de `run_command` (Fase 7, pendências
 registradas acima) — ver o roadmap completo em `docs/architecture.md`.
 
-## Fase 8 — FaceTime (completa); WhatsApp (avaliado, abandonado por decisão do usuário)
+## Fase 8 — FaceTime (completa); WhatsApp e confirmação por voz (avaliados, abandonados por decisão do usuário)
 
 ### FaceTime — completa
 
@@ -429,6 +432,28 @@ ver o processo completo. Todo o código (`packages/whatsapp`) foi
 removido do repositório — nunca chegou a ser commitado. Detalhe
 completo, incluindo os erros reais encontrados passo a passo, em
 `docs/architecture.md`.
+
+### Confirmação por voz (card in-app substituindo o diálogo nativo) — avaliada, ABANDONADA por decisão do usuário
+
+Motivado por um bug real encontrado testando o FaceTime (o diálogo
+nativo de confirmação, `dialog.showMessageBox`, bloqueia a janela
+INTEIRA enquanto aberto, inclusive o botão de microfone — então
+responder "sim"/"não" por voz nunca era possível na prática, mesmo
+com a lógica de reconhecimento pronta), foi implementado um card de
+confirmação DENTRO da própria janela (substituindo o diálogo nativo
+por completo) que deixava mic/texto clicáveis com a confirmação na
+tela, mais o reconhecimento de "sim"/"não" por voz/texto respondendo
+a Promise da confirmação diretamente. Chegou a ser testado
+parcialmente (ver `docs/architecture.md` pro relato completo,
+incluindo um incidente real de teste automatizado interceptando por
+acidente uma confirmação de verdade do usuário — sem consequência real
+porque a chamada afetada nunca chegou a rodar).
+
+O usuário decidiu encerrar esse trabalho ANTES da validação final de
+ponta a ponta — não por ter dado errado, por escolha: o diálogo nativo
+de confirmação continua exatamente como sempre foi, exigindo clique
+manual, sem confirmação por voz. Todo o código (nunca tinha sido
+commitado) foi revertido.
 
 ## Setup
 

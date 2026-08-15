@@ -2924,20 +2924,20 @@ vivo:
    diz se é cota mensal (`low`) ou throttling por minuto (`high`), sem
    suposição.
 
-### Pendência explícita — Fase 5 fecha sem esconder isso
+### Decisão encerrada — upgrade de plano do Figma, não vai acontecer
 
-**Figma está implementado e tecnicamente funcional, mas BLOQUEADO na
-prática pelo rate limit do plano gratuito do Figma** (Tier 1, ~6
-chamadas/mês, compartilhadas entre leitura de arquivo e exportação de
-imagem). Dois projetos reais do usuário estão prontos e parados
-esperando decisão sobre upgrade pro plano Professional do Figma:
-`food-products-site` e `natural-beauty-products-site`. Não seguimos
-testando contra a cota até o usuário confirmar o seat real dele no
-arquivo (Viewer/Collab vs Dev/Full) direto pelo figma.com — decisão
-explícita de não gastar mais chamadas de uma cota que pode já estar
-quase esgotada só com os testes desta sessão. Isso fica registrado
-como pendência real, não como "Fase 5 parte 7 completa" — ver Roadmap
-e "Próximo passo concreto" abaixo.
+**Figma está implementado e tecnicamente funcional, mas segue
+BLOQUEADO na prática pelo rate limit do plano gratuito (Starter) do
+Figma** (Tier 1, ~6 chamadas/mês, compartilhadas entre leitura de
+arquivo e exportação de imagem). Isso não é mais uma pendência em
+aberto: o usuário avaliou e decidiu explicitamente NÃO perseguir o
+upgrade pro plano Professional — Figma continua implementado e
+PAUSADO no Starter, com essa cota apertada como limitação aceita, não
+um "falta decidir". Os dois projetos reais que ficaram esperando
+(`food-products-site`, `natural-beauty-products-site`) continuam
+parados por essa mesma razão, sem prazo pra retomar. Se o usuário
+mudar de ideia no futuro, é uma decisão nova a partir do zero, não a
+retomada de algo "pendente".
 
 ## Roadmap completo (pra não perder o fio)
 
@@ -3063,9 +3063,10 @@ e "Próximo passo concreto" abaixo.
    de imagem — achado real, não suposição, confirmado na doc oficial
    de rate limits). Código já otimizado pra minimizar chamadas
    (reaproveita IDs, batching por formato, loga headers de rate
-   limit), mas dois projetos reais do usuário (`food-products-site`,
-   `natural-beauty-products-site`) ficam parados esperando decisão
-   sobre upgrade de plano do Figma.
+   limit); dois projetos reais do usuário (`food-products-site`,
+   `natural-beauty-products-site`) ficam parados — o usuário decidiu
+   NÃO fazer upgrade de plano do Figma, decisão encerrada, não mais em
+   aberto.
 6. GitHub completo (commits, PRs) + deploy de sites. **(Fase 6 —
    Pull Requests — completa)**: `code.create_pull_request`, fluxo de
    branch obrigatório pra mudança em projeto já existente
@@ -3127,8 +3128,13 @@ e "Próximo passo concreto" abaixo.
    — a fricção real de configuração (número de negócio separado,
    registro do número, destinatário pré-cadastrado obrigatório em modo
    de teste) não valeu a pena pro uso pretendido; não foi uma falha
-   técnica. Ver "## Fase 8 — FaceTime" e "## Fase 8 — WhatsApp" mais
-   abaixo pro detalhe completo de cada um.
+   técnica. Confirmação por voz (card in-app substituindo o diálogo
+   nativo, motivada por um bug real de mic bloqueado durante o teste do
+   FaceTime) também foi implementada e testada parcialmente, mas
+   ABANDONADA por decisão do usuário antes da validação final — diálogo
+   nativo de confirmação mantido como sempre foi. Ver "## Fase 8 —
+   FaceTime", "## Fase 8 — dois ajustes..." e "## Fase 8 — WhatsApp"
+   mais abaixo pro detalhe completo de cada um.
 9. Novas integrações e expansões.
 
 ## Próximo passo concreto
@@ -3359,14 +3365,14 @@ via API paga tipo Flux/GPT Image/Firefly) foi avaliada e o usuário
 decidiu não seguir por enquanto; **vídeo** foi descartado do escopo
 desta fase, não retomado sem pedido explícito.
 
-**Parte 7 (Figma — estrutura/conteúdo reais) fica como a ÚNICA
-pendência explícita da Fase 5** — não escondida, não maquiada de
-"completa": implementado, otimizado, validado tecnicamente, mas
-bloqueado na prática pela cota do plano gratuito do Figma (ver seção
-acima). Fase 5 encerra aqui com essa pendência registrada; retomar
-quando o usuário decidir sobre o upgrade de plano do Figma, ou quando
-confirmar que o seat atual já basta pra tentar de novo com mais
-cuidado com a cota.
+**Parte 7 (Figma — estrutura/conteúdo reais) fica implementada, mas
+pausada no plano Starter, por decisão encerrada do usuário** — não
+escondida, não maquiada de "completa sem ressalva": implementado,
+otimizado, validado tecnicamente, mas bloqueado na prática pela cota
+do plano gratuito do Figma (ver seção acima). Diferente de uma
+pendência em aberto, o usuário já avaliou o upgrade pro plano
+Professional e decidiu não fazer — Fase 5 encerra aqui com essa
+decisão registrada como final, não como algo esperando retomada.
 
 ---
 
@@ -4929,11 +4935,12 @@ lacunas silenciosas):
   Outras tools do sandbox (`write_file`, `git_commit`, etc.) continuam
   baixo risco — uma eventual segunda passada de nuance fica pra
   decisão futura, tool por tool, com o mesmo cuidado desta.
-- **Decisão sobre upgrade do plano do Figma**: dois projetos reais do
-  usuário (Fase 5 parte 6/7) continuam parados esperando decisão sobre
-  o plano Professional do Figma — rate limit do plano gratuito
-  (~6 chamadas/mês) segue bloqueando uso repetido. Não decidido nesta
-  fase, não escondido: registrado aqui e no README.
+
+**Não é mais pendência** (registrado aqui só por consistência com a
+versão anterior deste texto): o upgrade do plano do Figma foi
+DECIDIDO — o usuário optou por não fazer upgrade, Figma continua
+pausado no plano Starter (~6 chamadas/mês) por escolha, não por falta
+de decisão. Ver "## Fase 8" mais abaixo pro fechamento formal.
 
 ## Fase 8 — FaceTime
 
@@ -5060,6 +5067,20 @@ terminal) — nunca o "roda sem perguntar".
 **Fase 8 (FaceTime) está completa.**
 
 ## Fase 8 — dois ajustes no fluxo de confirmação (motivados pelo teste real do FaceTime)
+
+**Importante pra quem ler isto depois**: dos dois ajustes abaixo, o
+Ajuste 1 (investigação sobre o clique do FaceTime) é uma conclusão
+definitiva, sem pendência. Já os Ajustes 2 e 3 (confirmação por voz +
+card de confirmação in-app) foram implementados e testados até onde
+deu, mas o trabalho foi ABANDONADO por decisão consciente do usuário
+antes da validação final — não por ter dado errado. O diálogo nativo
+de confirmação (`dialog.showMessageBox`) continua exatamente como
+sempre foi, exigindo clique manual, sem confirmação por voz. Todo o
+código dos Ajustes 2/3 foi revertido (nunca tinha sido commitado —
+descartar foi só limpar working tree, não reverter nada em produção).
+Fica documentado em detalhe abaixo pelo mesmo motivo do WhatsApp mais
+adiante: registrar o que foi tentado e por que foi abandonado, pra
+nunca ser confundido com uma tentativa técnica que falhou.
 
 ### Ajuste 1: investigação — dá pra pular o clique final do FaceTime?
 
@@ -5264,10 +5285,15 @@ mais dialog nativo nesse fluxo.
    "sim"/"não" funcionando) fica com o usuário testando sozinho, no
    app já reiniciado e limpo, sem nenhum script meu rodando junto.
 
-**Fase 8, ajustes 1-3: investigação e correções completas no código,
-validado até onde dava com segurança. Ajuste 3 aguardando confirmação
-final do usuário, testando sozinho no app real — sem interferência de
-script nenhum desta vez.**
+**Fase 8, ajuste 1: concluído, sem pendência (não existe brecha
+técnica pro clique do FaceTime, decisão nem chegou a ser necessária).
+Ajustes 2 e 3 (confirmação por voz + card de confirmação in-app):
+implementados e testados até onde deu, mas ABANDONADOS por decisão do
+usuário antes da validação final de ponta a ponta — código
+integralmente revertido, diálogo nativo de confirmação mantido como
+sempre foi (exige clique manual, sem confirmação por voz). Não foi uma
+falha técnica: foi decisão consciente de aceitar o comportamento atual
+como está.**
 
 ## Fase 8 — WhatsApp: avaliado, prototipado, tecnicamente funcional — ABANDONADO por decisão do usuário
 
