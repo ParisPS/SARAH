@@ -5493,17 +5493,15 @@ fase** — fica registrado como achado a decidir (ex.: bloquear
 que é seguro deixar como está), não escondido atrás de "Fase 9
 completa".
 
-**Fase 9 está completa** pro objetivo pedido (`web.search_price`,
-validado de ponta a ponta com dado real). O achado do `ToolSearch`
-fica como pendência nova, separada, pro usuário decidir o que fazer.
+O achado do `ToolSearch` fica como pendência nova, separada, pro
+usuário decidir o que fazer.
 
-## Fase 10 — pesquisa de viabilidade: reservas de restaurante e ingresso de museu (SÓ pesquisa/proposta, nada implementado)
-
-Pedido veio rotulado "Fase 9" pelo usuário, mas Fase 9 já era a busca
-de preços (seção acima) — renumerado pra Fase 10 aqui, sem perguntar
-(correção mecânica, sem ambiguidade real). Por pedido explícito, esta
-etapa é só pesquisa + proposta de arquitetura — nenhum código foi
-escrito.
+**O pedido original desta fase incluía uma segunda frente, além da
+busca de preços: reserva de restaurante e ingresso de museu.** Só
+pesquisa + proposta de arquitetura foram feitas pra essa frente —
+nenhum código chegou a ser escrito em nenhum momento, e ela acabou
+AVALIADA E DESCARTADA (ver decisão no fim desta seção) — o escopo
+final da Fase 9 é só `web.search_price`.
 
 Escopo confirmado antes de pesquisar: reserva/ingresso pode envolver
 pagamento (museu quase sempre envolve, restaurante geralmente não pra
@@ -5604,24 +5602,22 @@ busca genérica de lugares):
 - **Risco: BAIXO nos dois** — é busca + preparo de informação, nunca
   uma ação real de reserva/compra/pagamento, mesmo princípio "SARAH
   nunca lida com dado financeiro" já seguido no projeto inteiro.
-- **Setup pendente do usuário, se aprovado**: criar conta Google
-  Cloud, habilitar Places API (New), configurar billing (exige
+- **Setup que seria pendente do usuário, se aprovado**: criar conta
+  Google Cloud, habilitar Places API (New), configurar billing (exige
   cartão) — mesma categoria de decisão de custo/conta externa trazida
   ao usuário antes de implementar em fases anteriores (Figma,
-  WhatsApp, Fase 9).
+  WhatsApp).
 
-### Decisão: não seguir — encerrada, não é pendência em aberto
+**Decisão: não seguir — encerrada, não é pendência em aberto.** Depois
+de ver a proposta acima, o usuário decidiu NÃO implementar reserva de
+restaurante/museu — decisão CONSCIENTE, não "não deu tempo"/"ainda em
+aberto" (mesmo padrão já usado pro WhatsApp na Fase 8 e pro upgrade do
+plano do Figma): a pesquisa mostrou um caminho tecnicamente viável
+(Google Places + preparo de reserva pro usuário completar), mas o
+usuário optou por não seguir com ele. Nenhum código tinha sido
+escrito, então não há nada pra reverter.
 
-Depois de ver a proposta (Places API + `prepare_reservation`/
-`prepare_visit`, sem reserva real nenhuma), o usuário decidiu NÃO
-implementar — nenhum código chegou a ser escrito em nenhum momento
-desta fase, então não há nada pra reverter. Mesmo padrão de
-documentação já usado pro WhatsApp (Fase 8) e pro upgrade do plano do
-Figma: registrado aqui como decisão CONSCIENTE e encerrada, não como
-"não deu tempo" ou "ainda em aberto" — a pesquisa mostrou um caminho
-tecnicamente viável (Google Places + preparo de reserva pro usuário
-completar), mas o usuário optou por não seguir com ele.
-
-**Fase 10 está fechada: pesquisa e proposta completas, decisão de NÃO
-implementar tomada pelo usuário depois de ver o resultado da
-pesquisa.**
+**Fase 9 está fechada com escopo reduzido: `web.search_price`
+implementado e validado de ponta a ponta (único entregável real); a
+frente de reservas foi pesquisada, proposta e conscientemente
+descartada — não é trabalho planejado nem pendência.**
