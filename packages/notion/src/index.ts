@@ -35,8 +35,8 @@ const CATEGORY_OPTIONS = ["Viagem", "Pessoal", "Saúde", "Estudos", "Trabalho"] 
 
 const createEvent = tool(
   "create_event",
-  "Cria um compromisso no Notion Calendar (banco de dados do Notion; usa a propriedade de título " +
-    "e a propriedade de data existentes no banco, detectadas automaticamente). " +
+  "Cria um compromisso no Notion Calendar (banco de dados do Notion; título e data detectados " +
+    "automaticamente pelo tipo da propriedade existente no banco). " +
     "Ação aditiva e reversível — não apaga nem sobrescreve nada, por isso é baixo risco. " +
     "ESTE é o calendário PRINCIPAL do usuário: use esta tool como PADRÃO sempre que o pedido " +
     "não especificar explicitamente qual calendário usar, ou quando o usuário disser " +
@@ -46,8 +46,8 @@ const createEvent = tool(
     "Use apple_calendar.create_event em vez desta SÓ quando o usuário disser explicitamente " +
     "'Apple Calendar' ou 'calendário da Apple'. " +
     "Se o usuário mencionar uma categoria (Pessoal, Estudos, Trabalho, Saúde ou Viagem), " +
-    "preencha o parâmetro `categoria` com o valor exato correspondente. Não invente uma " +
-    "categoria fora dessa lista, e não preencha se o usuário não mencionar nenhuma.",
+    "preencha `categoria` com o valor exato correspondente — não invente outra, e não " +
+    "preencha se não for mencionada.",
   {
     title: z.string().describe("título do compromisso"),
     date: z

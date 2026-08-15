@@ -381,23 +381,19 @@ async function exportImages(token: string, fileKey: string, nodes: ExportCandida
 
 const exportAssetsTool = tool(
   "export_assets",
-  "Lê um arquivo do Figma do usuário (SÓ leitura — nunca escreve nada de volta no Figma) e exporta pra pasta " +
-    "assets/figma/ do projeto: fontes usadas (nome/peso — não o arquivo da fonte em si, o Figma não " +
-    "redistribui isso), estilos de cor nomeados (hex), imagens/componentes marcados pra exportação " +
-    "dentro do Figma (ou os IDs específicos passados em `nodeIds`), e a ESTRUTURA DE CONTEÚDO real do " +
-    "design (content.json) — hierarquia de seções/frames/componentes com o TEXTO DE VERDADE de cada nó, " +
-    "não inventado. IMPORTANTE: ao gerar um site/página a partir de um arquivo do Figma, use content.json " +
-    "como fonte da estrutura e do texto — NUNCA invente cópia/seções/produtos; só fontes/cores/imagens " +
-    "reais sem estrutura real ainda deixa o resultado infiel ao design. `fileKey` é o trecho da URL do " +
-    "arquivo (figma.com/design/<fileKey>/... ou figma.com/file/<fileKey>/...). Precisa de `pnpm figma:auth` " +
-    "configurado antes — se não estiver, a tool recusa com uma mensagem clara. Baixo risco: só lê o Figma " +
-    "e escreve arquivos dentro da pasta do projeto, nada é enviado de volta pro Figma. ATENÇÃO A COTA: " +
-    "GET file/GET file nodes/GET images do Figma dividem a MESMA cota (Tier 1) — pra conta sem seat Dev/Full " +
-    "pago, é só ~6 chamadas por MÊS (não por minuto). Cada `id` de nó já vem salvo em content.json (campo " +
-    "`id` de cada item da árvore) depois da primeira chamada — reaproveite esses IDs pra montar `nodeIds` " +
-    "sem precisar chamar de novo. E sempre que possível, passe VÁRIOS `nodeIds` do MESMO formato numa única " +
-    "chamada — a tool já agrupa e faz 1 requisição por formato, não 1 por nó, então pedir 8 componentes " +
-    "PNG de uma vez custa o mesmo que pedir 1.",
+  "Lê um arquivo do Figma do usuário (SÓ leitura — nunca escreve nada de volta no Figma) e exporta pra " +
+    "assets/figma/ do projeto: fontes usadas (nome/peso), estilos de cor nomeados (hex), imagens/" +
+    "componentes marcados pra exportação dentro do Figma (ou os IDs em `nodeIds`), e a ESTRUTURA DE " +
+    "CONTEÚDO real do design (content.json) — hierarquia de seções/frames/componentes com o TEXTO DE " +
+    "VERDADE de cada nó, não inventado. IMPORTANTE: ao gerar um site a partir de um Figma, use content.json " +
+    "como fonte da estrutura e do texto — NUNCA invente cópia/seções/produtos. `fileKey` é o trecho da URL " +
+    "(figma.com/design/<fileKey>/... ou figma.com/file/<fileKey>/...). Precisa de `pnpm figma:auth` " +
+    "configurado antes (recusa com mensagem clara se não). Baixo risco: só lê o Figma, escreve só dentro " +
+    "da pasta do projeto. ATENÇÃO A COTA: GET file/GET file nodes/GET images dividem a MESMA cota (Tier 1) " +
+    "— sem seat Dev/Full pago, é só ~6 chamadas por MÊS (não por minuto). Reaproveite o `id` já salvo em " +
+    "content.json (de cada item da árvore) pra montar `nodeIds` sem precisar chamar de novo, e agrupe " +
+    "VÁRIOS `nodeIds` do MESMO formato numa única chamada — a tool já agrupa por formato, não por nó, " +
+    "então 8 componentes PNG de uma vez custa o mesmo que 1.",
   {
     project: z.string().describe("slug/nome do projeto, retornado por code.create_project"),
     fileKey: z.string().describe("chave do arquivo do Figma, extraída da URL (figma.com/design/<fileKey>/...)"),

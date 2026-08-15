@@ -104,11 +104,10 @@ export function createMemoryServer(dbPath: string): MemoryServerResult {
     "remember",
     "Guarda um fato ou preferência do usuário PERMANENTEMENTE (sobrevive a reiniciar o processo). " +
       "Baixo risco: ação aditiva, nunca sobrescreve nem apaga nada. Use category=\"preferencia\" pra " +
-      "regras de comportamento que devem valer automaticamente dali pra frente (ex.: \"sempre crie " +
-      "lembretes na lista Trabalho por padrão\") — preferências guardadas assim já chegam pra você " +
-      "automaticamente em toda conversa nova, sem precisar chamar memory.recall antes. Use " +
-      "category=\"fato\" pra informação geral sobre o usuário que não muda comportamento de outra " +
-      "tool (ex.: \"mora em São Paulo\"). " +
+      "regras de comportamento futuro (ex.: \"sempre crie lembretes na lista Trabalho por padrão\") — " +
+      "já chegam automaticamente em toda conversa nova, sem precisar chamar memory.recall antes. Use " +
+      "category=\"fato\" pra informação geral que não muda comportamento de outra tool (ex.: \"mora em " +
+      "São Paulo\"). " +
       "IMPORTANTE — checagem de duplicata/conflito: por padrão (force ausente/false), esta tool busca " +
       "por SIMILARIDADE SEMÂNTICA contra memórias já guardadas da MESMA categoria antes de salvar. Se " +
       "achar uma parecida, NÃO grava — devolve {conflict: true, existing: {...}} e você precisa " +

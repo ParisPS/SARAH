@@ -64,15 +64,15 @@ import { getGithubToken, createPullRequest, getDefaultBranch } from "./github.js
 
 const createProjectTool = tool(
   "create_project",
-  "Cria um projeto de código novo (ou reabre um já existente nesta sessão) — uma pasta dedicada FORA " +
+  "Cria um projeto de código novo (ou reabre um já existente nesta sessão) — pasta dedicada FORA " +
     "do repositório da própria SARAH (`~/SarahProjects/<slug>/`, com seu próprio git), rodando dentro " +
     "de um container isolado (sem acesso ao resto do Mac, sem acesso à rede local, só internet). " +
     "TAMBÉM cria automaticamente um repositório PRIVADO vazio no GitHub pra esse projeto (se " +
-    "`pnpm github:auth` já foi configurado nesta máquina) e já deixa `origin` e a credencial de push " +
-    "prontas — sem precisar de nenhum passo manual depois. Chame esta tool ANTES de qualquer outra " +
-    "`code.*` pra esse projeto — as outras tools recebem o mesmo `project` (nome ou slug) que essa " +
-    "retorna. Baixo risco: cria uma pasta + um repositório VAZIO, nada destrutivo, nenhum código é " +
-    "enviado (isso é `git_push`, sempre alto risco, à parte).\n\n" +
+    "`pnpm github:auth` já foi configurado nesta máquina) com `origin` e a credencial de push já " +
+    "prontas — sem passo manual depois. Chame esta tool ANTES de qualquer outra `code.*` pra esse " +
+    "projeto — as outras tools recebem o mesmo `project` (nome ou slug) que essa retorna. Baixo risco: " +
+    "cria uma pasta + um repositório VAZIO, nada destrutivo, nenhum código é enviado (isso é " +
+    "`git_push`, sempre alto risco, à parte).\n\n" +
     "ESTE É O CAMINHO PADRÃO pra criar um site/projeto/app — use direto, SEM perguntar nada, sempre " +
     "que o usuário não mencionar o Base44 pelo nome. Só use as tools `mcp__claude_ai_Base44__*` (app " +
     'builder externo, requer conta premium) se o usuário pedir explicitamente por nome (ex.: "faz pelo ' +
@@ -120,18 +120,18 @@ const writeFileTool = tool(
 
 const runCommandTool = tool(
   "run_command",
-  "Roda um comando de shell dentro do container isolado do projeto (working dir = raiz do projeto). " +
-    "Use pra instalar dependências (ex.: 'npm install'), rodar build/testes, ou qualquer outro " +
-    "comando de desenvolvimento. O comando tem acesso à internet (necessário pra instalar pacotes) " +
-    "mas NÃO tem acesso à rede local do Mac nem a nenhum arquivo fora da pasta do projeto. RISCO " +
-    "MÉDIO (Fase 7 parte 3): o isolamento do container garante que nada FORA do projeto é afetado, " +
-    "mas DENTRO do projeto um comando ainda pode apagar trabalho do usuário (ex.: 'rm -rf .'), então " +
-    "confirma por padrão. Comandos simples de leitura/build/teste (ex.: 'ls', 'pwd', 'cat arquivo', " +
-    "'npm test', 'npm run build', 'npm run dev', 'git status', 'git log', 'git diff') rodam direto, " +
-    "sem confirmação — prefira UM desses sozinhos, sem encadear com ';'/'&&'/'|' (encadear tira o " +
-    "comando da lista de auto-aprovação mesmo que cada parte pareça inofensiva sozinha, e passa a " +
-    "confirmar). Qualquer coisa fora dessa lista (rm, mv, redirecionamento de escrita como '>', " +
-    "instalar pacote não testado antes, mexer em .git/config, etc.) confirma antes de rodar.",
+  "Roda um comando de shell dentro do container isolado do projeto (working dir = raiz do projeto) — " +
+    "instalar dependências (ex.: 'npm install'), rodar build/testes, ou qualquer outro comando de " +
+    "desenvolvimento. Tem acesso à internet (necessário pra instalar pacotes) mas NÃO à rede local do " +
+    "Mac nem a arquivo fora da pasta do projeto. RISCO MÉDIO (Fase 7 parte 3): o isolamento do container " +
+    "garante que nada FORA do projeto é afetado, mas DENTRO dele um comando ainda pode apagar trabalho " +
+    "do usuário (ex.: 'rm -rf .'), então confirma por padrão. Comandos simples de leitura/build/teste " +
+    "(ex.: 'ls', 'pwd', 'cat arquivo', 'npm test', 'npm run build', 'npm run dev', 'git status', 'git " +
+    "log', 'git diff') rodam direto, sem confirmação — prefira UM desses sozinho, sem encadear com " +
+    "';'/'&&'/'|' (encadear tira o comando da lista de auto-aprovação mesmo que cada parte pareça " +
+    "inofensiva sozinha, e passa a confirmar). Qualquer coisa fora dessa lista (rm, mv, redirecionamento " +
+    "de escrita como '>', instalar pacote não testado antes, mexer em .git/config, etc.) confirma antes " +
+    "de rodar.",
   {
     project: z.string().describe("slug/nome do projeto"),
     command: z.string().describe("comando de shell a rodar dentro do container — prefira um comando simples da allowlist (ver descrição da tool) quando possível, pra rodar sem pedir confirmação"),
