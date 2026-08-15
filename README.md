@@ -1,4 +1,4 @@
-# SARAH — Fases 0-9 completas (Figma pausado no Starter por decisão do usuário)
+# SARAH — Fases 0-10 completas (Figma pausado no Starter por decisão do usuário)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -484,6 +484,20 @@ commitado) foi revertido.
   Não corrigido nesta fase — fica registrado como pendência nova pro
   usuário decidir o que fazer. Detalhe completo em
   `docs/architecture.md`.
+
+## Fase 10 — reservas de restaurante e ingresso de museu: pesquisado, ENCERRADO por decisão do usuário
+
+Só pesquisa e proposta de arquitetura, nenhum código chegou a ser
+escrito. Pesquisa (fontes oficiais de cada provedor): OpenTable, Resy
+e Reserve with Google não têm API de reserva acessível pra projeto
+pessoal (todos exigem virar parceiro comercial); Tiqets/GetYourGuide
+(museus/ingressos) têm elegibilidade incerta pra uso pessoal na parte
+de leitura, e a parte de COMPRA exige volume comercial mínimo
+(~200 pedidos/mês no caso do Tiqets) — inviável. Proposta apresentada
+(Google Places API pra buscar dados reais + tools que preparam a
+reserva/visita pro usuário completar sozinho, nunca reserva de
+verdade) foi vista e **recusada pelo usuário** — decisão consciente,
+não pendência em aberto. Detalhe completo em `docs/architecture.md`.
 
 ## Setup
 

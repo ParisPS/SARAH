@@ -5610,6 +5610,18 @@ busca genérica de lugares):
   ao usuário antes de implementar em fases anteriores (Figma,
   WhatsApp, Fase 9).
 
-**Fase 10 fica aqui: pesquisa e proposta completas, aguardando decisão
-do usuário sobre seguir (e com quais ajustes) antes de qualquer
-implementação.**
+### Decisão: não seguir — encerrada, não é pendência em aberto
+
+Depois de ver a proposta (Places API + `prepare_reservation`/
+`prepare_visit`, sem reserva real nenhuma), o usuário decidiu NÃO
+implementar — nenhum código chegou a ser escrito em nenhum momento
+desta fase, então não há nada pra reverter. Mesmo padrão de
+documentação já usado pro WhatsApp (Fase 8) e pro upgrade do plano do
+Figma: registrado aqui como decisão CONSCIENTE e encerrada, não como
+"não deu tempo" ou "ainda em aberto" — a pesquisa mostrou um caminho
+tecnicamente viável (Google Places + preparo de reserva pro usuário
+completar), mas o usuário optou por não seguir com ele.
+
+**Fase 10 está fechada: pesquisa e proposta completas, decisão de NÃO
+implementar tomada pelo usuário depois de ver o resultado da
+pesquisa.**
