@@ -29,6 +29,12 @@ libs não-oficiais de mensageria continua valendo).
   de tela inteira — já vazou credenciais reais DUAS vezes neste projeto
   (outra janela aberta no fundo). Sempre peça pro usuário olhar e
   descrever.
+- **Precisa só CHECAR SE um segredo já está salvo no Keychain (não ler
+  o valor)?** Nunca rode `security find-generic-password ... -w`
+  (mesmo truncando a saída) — a flag `-w` imprime a senha crua. Já
+  vazou parte de um token real do GitHub assim (30 caracteres de um
+  Personal Access Token, truncados achando que era seguro). Confirme
+  existência pelo código de saída do comando, sem a flag `-w`.
 - **`tsx watch` reiniciando o processo sozinho sem motivo aparente?**
   O audit log grava em `data/sarah.db`, dentro da própria pasta
   observada — cada tool call vira uma mudança de arquivo que dispara

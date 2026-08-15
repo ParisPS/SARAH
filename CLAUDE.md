@@ -86,3 +86,24 @@ dependa de VER algo na tela (dialog nativo, janela, o resultado visual
 de uma mudança), a resposta certa é pedir pro USUÁRIO olhar e
 descrever/confirmar — nunca capturar a tela sozinho, nem de uma janela
 específica, nem da tela inteira.
+
+## Nunca imprimir o VALOR de um segredo só pra checar se ele existe
+
+Pra checar se uma credencial já está salva no Keychain (ex.:
+`sarah-code-github-token`, `sarah-gmail-refresh-token`), NUNCA rode
+`security find-generic-password`/`find-internet-password` (ou
+equivalente) com a flag que IMPRIME a senha (`-w`) — mesmo truncando a
+saída com `head -c N` achando que é "só uma olhadinha". Incidente real
+(levantamento de otimização, item T1): tentando confirmar se
+`github:auth` já estava configurado antes de decidir se era seguro
+rodar `code.create_project` de verdade, rodei `security
+find-generic-password ... -w | head -c 30` — os primeiros 30
+caracteres de um Personal Access Token do GitHub (`ghp_` + 26 dos 36
+caracteres do segredo) já são uma fração grande demais pra ser segura,
+e apareceram em texto puro na conversa (ver `docs/architecture.md`
+pro relato completo). Mesma classe de erro dos incidentes de
+screenshot acima — verificar "isso existe?" de um jeito que expõe o
+PRÓPRIO CONTEÚDO do que devia só ser confirmado. A partir de agora:
+checar existência de um segredo salvo SEM a flag `-w` (o código de
+saída do comando já diz se o item existe ou não, sem precisar ler o
+valor nunca).

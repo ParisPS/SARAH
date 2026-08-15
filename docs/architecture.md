@@ -5726,12 +5726,12 @@ qualquer mudança; a aprovação veio item a item, na ordem abaixo.
    (teste isolado, só a description) → escolheu `sarah-code` (correto,
    sem tentar Base44). Commit `0db5428`.
 
-### Em espera: troca do preset `claude_code` do systemPrompt (não implementado)
+### Troca do preset `claude_code` do systemPrompt — completa
 
 Maior ganho de custo de token do levantamento, mas também a única
-mudança que pode alterar comportamento OBSERVÁVEL de verdade — por
-isso, a pedido explícito, fica em espera até uma caracterização
-precisa (não "pode mudar", o QUÊ muda), sem implementar nada ainda.
+mudança que podia alterar comportamento OBSERVÁVEL de verdade — por
+isso, a pedido explícito, ficou em espera até uma caracterização
+precisa (não "pode mudar", o QUÊ muda) antes de qualquer implementação.
 
 Caracterização, baseada em evidência extraída de verdade do binário
 do Claude Code instalado nesta máquina (`grep -a` no executável —
@@ -5786,10 +5786,134 @@ do Claude Code instalado nesta máquina (`grep -a` no executável —
   inteira (`# Doing tasks`) cujo título foi confirmado mas o conteúdo
   não foi extraído.
 
-**Conclusão**: trocar o preset não é só "economizar tokens de graça" —
-exige DELIBERADAMENTE reescrever, nos termos da SARAH, pelo menos o
-protocolo de segurança de git (hoje só existe via preset, usado de
-verdade pelas tools `code.*`) e decidir se a cautela de URL deve ser
-portada. Sem isso, a troca implementaria uma regressão real em vez de
-uma limpeza. Decisão de seguir ou não fica com o usuário — nenhum
-código foi alterado nesta frente.
+**Conclusão da caracterização**: trocar o preset não seria só
+"economizar tokens de graça" — exigiria DELIBERADAMENTE reescrever, nos
+termos da SARAH, pelo menos o protocolo de segurança de git (só existia
+via preset, usado de verdade pelas tools `code.*`) e decidir se a
+cautela de URL deveria ser portada. Sem isso, a troca implementaria uma
+regressão real em vez de uma limpeza.
+
+**Decisão do usuário**: aprovado EM PRINCÍPIO, não como troca direta —
+plano de 4 passos, sem precisar de nova aprovação pra começar, só sem
+pular a validação de cada passo antes de mexer no preset de verdade.
+
+**Passo 1 — protocolo de segurança de git, incorporado ao
+`GIT_WORKFLOW_POLICY_TEXT`** (complementado, não substituído — a regra
+de branch-antes-de-PR já existente continua igual): novo parágrafo com
+o que o preset garantia de graça — só commitar quando pedido
+explicitamente (`code.git_commit` é baixo risco, roda sem confirmação,
+então isso dependia só do texto do prompt, nunca do Gateway), nunca
+`--amend`, mensagem de commit concisa focada no porquê. Nota explícita
+de que comandos git destrutivos (`reset --hard`, `clean -f`,
+`checkout .`, `branch -D`) só existem via `code.run_command`, que já
+exige confirmação por não estar na allowlist — essa parte específica do
+protocolo do preset já era garantida por um mecanismo mais forte que
+texto de prompt (o Gateway), não precisou duplicação.
+
+**Passo 2 — `URL_GENERATION_POLICY_TEXT`** (novo): nunca inventar/
+chutar uma URL — só incluir link vindo de fonte real (resultado de
+tool, ou dado pelo usuário). Diferente do original do preset (escopado
+só a "confiança de ser pra programação"), a versão da SARAH é geral —
+não faria sentido restringir a programação numa assistente pessoal.
+Genuinamente aplicável: `gmail.create_draft`/`reply_draft` deixam o
+modelo escrever corpo livre, e `web.search_price` é a ÚNICA tool que
+devolve URL real de busca — sem a regra, nada impedia "chutar" a URL de
+um site/restaurante mencionado pelo usuário.
+
+**Passo 3 — validação dos textos novos, RODANDO A AGENT SDK DE
+VERDADE** (mesmo padrão seguro do T3 — `query()` real, `canUseTool`
+negando/mockando antes de qualquer execução real):
+- Protocolo de commit: MCP server FALSO (mesmas descriptions reais de
+  `packages/sandbox`, handlers no-op sem podman/filesystem/GitHub) pra
+  deixar o fluxo INTEIRO completar sem efeito colateral possível.
+  Cenário sem pedir commit -> só `create_project` chamado, `git_commit`
+  NÃO chamado. Cenário pedindo commit -> chamou `create_project`,
+  `write_file` E `git_commit`, com mensagem seguindo o estilo pedido.
+- Política de URL: pediu rascunho com link de uma padaria fictícia sem
+  pesquisar -> o modelo NÃO inventou URL, nem no draft nem na resposta
+  final, e verbalizou a própria política de volta ("Eu não invento
+  URLs...").
+
+**ACHADO À PARTE** (fora do escopo, não corrigido): `gitCommit()` em
+`packages/sandbox/src/projects.ts` sempre roda `git add -A`,
+contradizendo a recomendação do preset de preferir arquivos específicos
+pra evitar commitar segredo por engano — é uma limitação da
+IMPLEMENTAÇÃO da tool, não algo que o `systemPrompt` consiga corrigir (o
+modelo não escolhe quais arquivos `git_commit` adiciona). Registrado
+pra decisão futura.
+
+**Passo 4 — troca do preset de verdade**: `systemPrompt` deixou de ser
+`{type: "preset", preset: "claude_code", append: ...}` e virou uma
+string própria — `SARAH_SYSTEM_PROMPT_BASE` (identidade, tom, formato
+de saída, explicação de tags `<system-reminder>`) seguida das políticas
+já existentes. Formato SEM markdown é decisão nova, não perda:
+`apps/menubar` nunca renderizou markdown de verdade (`extractLink()` em
+`renderer.js` já tinha que EXCLUIR crase/asterisco do regex de link —
+achado real de que a resposta saía com sintaxe de markdown sem nada que
+a renderizasse) e a resposta é lida em voz alta sem nenhum stripping de
+markdown antes do `say` — um `**negrito**` seria falado literalmente.
+Pedir texto corrido corrige os dois de uma vez. Escopo deliberadamente
+NÃO replicado (fora do aprovado): a seção "Doing tasks" do preset
+(convenções de estilo de código), usada só indiretamente pelas tools
+`code.*` — risco residual conhecido, não corrigido.
+
+Reteste de regressão completo, rodando a Agent SDK de verdade, zero
+efeito colateral em todos os casos:
+1. Tom/identidade: resposta não se apresenta como "Claude Code"/
+   ferramenta de engenharia de software, sem nenhuma sintaxe de
+   markdown.
+2. Notion (padrão, sem mencionar calendário) -> escolheu `sarah-notion`.
+3. Apple Calendar (explícito) -> escolheu `sarah-apple-calendar`.
+4. Apple Reminders -> escolheu `sarah-apple-reminders`.
+5. Política de URL (Gmail) -> não inventou URL, avisou que não tinha
+   uma real disponível.
+6. Protocolo de commit -> repetido com o systemPrompt COMPLETO (não só
+   o texto isolado), mesmo resultado do passo 3.
+7. Conflito de memória (contra CÓPIA do banco de memória real, Voyage
+   API configurada de verdade) -> `memory.remember` voltou com
+   conflito, o modelo chamou `AskUserQuestion` em vez de decidir
+   sozinho, não usou `force:true` sem perguntar antes.
+
+Fora do escopo deste reteste (sem lógica de disambiguação/política
+própria dependente do texto do systemPrompt): apple-notes,
+apple-contacts, facetime, web-search, figma, graphics, slides,
+voice/wake-word, dashboard — recomendado um spot-check ao vivo no app
+real (depois de reiniciar o daemon) antes de considerar o item
+totalmente fechado, mesma prática já estabelecida neste projeto pra
+validação final de comportamento observável.
+
+Commits: `8db9b06` (passos 1-2) e `d30e902` (passo 4).
+
+## Achado real: comando de verificação imprimiu parte de um segredo real na conversa — nova regra permanente no CLAUDE.md
+
+Durante a validação do passo 4 (troca do preset), antes de decidir a
+estratégia de teste segura (MCP server falso, sem tocar
+`create_project` de verdade), tentei checar se `github:auth` já
+estava configurado nesta máquina — pra saber se rodar `code.create_project`
+de verdade criaria um repositório real no GitHub do usuário (e portanto
+devia ser evitado). Rodei `security find-generic-password -a
+"$(whoami)" -s sarah-code-github-token -w`, truncando com `head -c 30`
+achando que isso seria só "confirma que existe, sem mostrar o segredo
+inteiro" — mas a saída (`-w` imprime a senha CRUA) é o próprio token do
+GitHub, e os primeiros 30 caracteres de um Personal Access Token
+(`ghp_` + 26 dos 36 caracteres do segredo) já são uma fração grande
+demais pra tratar como seguro — apareceram em texto puro nesta
+conversa.
+
+**Mesma classe de erro dos incidentes de screenshot** (ver "Achado real
+(segunda ocorrência)" acima) — tentar verificar algo ("esse segredo
+existe?") de um jeito que expõe o PRÓPRIO CONTEÚDO do segredo, quando a
+pergunta real não precisava do conteúdo, só da existência. A diferença
+aqui é o mecanismo (comando de shell que imprime a senha, não captura
+de tela) — o princípio que falhou é o mesmo: verificação automatizada
+não pode depender de exibir algo sensível, mesmo truncado, mesmo "só
+uma olhada rápida".
+
+**Correção**: nova regra permanente no `CLAUDE.md` deste repositório —
+nunca rodar `security find-generic-password`/`find-internet-password`
+(ou equivalente) com a flag que IMPRIME a senha (`-w`) só pra checar se
+um segredo existe; usar sempre a forma que só confirma existência via
+código de saída, sem nunca capturar/imprimir o valor (nem truncado).
+Recomendação ao usuário: como precaução, considerar revogar/regenerar
+o Personal Access Token do GitHub salvo como `sarah-code-github-token`
+no Keychain, já que uma fração real dele passou por esta conversa.
