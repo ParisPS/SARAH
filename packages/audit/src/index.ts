@@ -180,30 +180,61 @@ export class AuditLog {
    * tool, não globalmente: uma sequência de erros de tools DIFERENTES
    * intercaladas nunca conta pra nenhuma delas — 3 falhas seguidas de
    * `sarah-figma` misturadas com sucessos de `sarah-gmail` no meio não
-   * disparam nada pro Gmail. Dataset pequeno (uso pessoal, não
-   * empresarial) — agregação simples em JS por tool, sem SQL exótico,
-   * mesmo estilo de `riskCounts`/`countByServer` já usados aqui.
+   * disparam nada pro Gmail.
+   *
+   * Otimização (levantamento de performance, item P1): a versão
+   * anterior rodava esta função em TODO `ask()` (não só no dashboard,
+   * ver `packages/core/src/index.ts`) fazendo N+1 queries — um
+   * `SELECT DISTINCT tool_name` seguido de UMA query separada por tool
+   * já vista. Agora é uma query só: `ROW_NUMBER() OVER (PARTITION BY
+   * tool_name ORDER BY id DESC)` pega as últimas `threshold` linhas de
+   * CADA tool de uma vez (janela suportada pelo SQLite bundlado no
+   * `better-sqlite3` desta versão, confirmado rodando de verdade — ver
+   * validação). O agrupamento por tool continua em JS (dataset
+   * pequeno, ~30 tools × threshold linhas), só que sobre um resultado
+   * já filtrado pelo SQL, não mais uma query por tool.
    */
   repeatedFailures(threshold = 3): Array<{ toolName: string; count: number; lastError: string; lastTimestamp: string }> {
-    const toolNames = (
-      this.db.prepare(`SELECT DISTINCT tool_name FROM tool_calls WHERE status IS NOT NULL`).all() as Array<{ tool_name: string }>
-    ).map((r) => r.tool_name);
+    const rows = this.db
+      .prepare(
+        `SELECT tool_name, status, error_message, timestamp FROM (
+           SELECT tool_name, status, error_message, timestamp,
+                  ROW_NUMBER() OVER (PARTITION BY tool_name ORDER BY id DESC) AS rn
+           FROM tool_calls
+           WHERE status IS NOT NULL
+         )
+         WHERE rn <= ?
+         ORDER BY tool_name, rn ASC`
+      )
+      .all(threshold) as Array<{ tool_name: string; status: CallStatus; error_message: string | null; timestamp: string }>;
 
+    // Cada tool aparece em linhas CONSECUTIVAS (a query está ordenada
+    // por tool_name), já da mais recente (rn=1) pra mais antiga dentro
+    // do grupo — agrupar em ordem de chegada, sem precisar reordenar.
     const results: Array<{ toolName: string; count: number; lastError: string; lastTimestamp: string }> = [];
-    for (const toolName of toolNames) {
-      const rows = this.db
-        .prepare(`SELECT status, error_message, timestamp FROM tool_calls WHERE tool_name = ? AND status IS NOT NULL ORDER BY id DESC LIMIT ?`)
-        .all(toolName, threshold) as Array<{ status: CallStatus; error_message: string | null; timestamp: string }>;
-      if (rows.length < threshold) continue;
-      if (rows.every((r) => r.status === "error")) {
+    let currentTool: string | null = null;
+    let group: typeof rows = [];
+    const flush = () => {
+      if (currentTool === null || group.length < threshold) return;
+      if (group.every((r) => r.status === "error")) {
         results.push({
-          toolName,
-          count: rows.length,
-          lastError: rows[0].error_message ?? "",
-          lastTimestamp: rows[0].timestamp,
+          toolName: currentTool,
+          count: group.length,
+          lastError: group[0].error_message ?? "",
+          lastTimestamp: group[0].timestamp,
         });
       }
+    };
+    for (const row of rows) {
+      if (row.tool_name !== currentTool) {
+        flush();
+        currentTool = row.tool_name;
+        group = [];
+      }
+      group.push(row);
     }
+    flush();
+
     return results;
   }
 
