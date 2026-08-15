@@ -3117,14 +3117,18 @@ e "Próximo passo concreto" abaixo.
    (rastreamento de expiração de credencial) e as OUTRAS tools que
    ainda merecem essa mesma nuance (fora do escopo desta primeira
    passada, de propósito) continuam pendentes.
-8. **Fase 8 — FaceTime, completa**: `apple-contacts.find` (busca no
-   Contacts.app via JXA, baixo risco) resolve nome → telefone/e-mail
-   pra `facetime.call` (dispara chamada de VÍDEO via `facetime://`,
-   nunca `facetime-audio://`) — risco MÉDIO sem allowlist nenhuma
-   (toda chamada confirma, sempre; só a apresentação é mais leve que
-   alto risco, mesmo mecanismo da Fase 7 parte 3). Ver "## Fase 8 —
-   FaceTime" mais abaixo pro detalhe completo e a validação real (com
-   uma chamada de vídeo de verdade).
+8. **Fase 8 — completa**: FaceTime (`apple-contacts.find`, busca no
+   Contacts.app via JXA, baixo risco, resolve nome → telefone/e-mail
+   pra `facetime.call`, que dispara chamada de VÍDEO via `facetime://`,
+   nunca `facetime-audio://` — risco MÉDIO sem allowlist nenhuma, toda
+   chamada confirma sempre). WhatsApp (texto via Cloud API oficial da
+   Meta) foi avaliado, prototipado e validado tecnicamente funcional
+   contra a API real, mas ABANDONADO por decisão consciente do usuário
+   — a fricção real de configuração (número de negócio separado,
+   registro do número, destinatário pré-cadastrado obrigatório em modo
+   de teste) não valeu a pena pro uso pretendido; não foi uma falha
+   técnica. Ver "## Fase 8 — FaceTime" e "## Fase 8 — WhatsApp" mais
+   abaixo pro detalhe completo de cada um.
 9. Novas integrações e expansões.
 
 ## Próximo passo concreto
@@ -5054,3 +5058,321 @@ terminal) — nunca o "roda sem perguntar".
    prática, não só registrada em texto.
 
 **Fase 8 (FaceTime) está completa.**
+
+## Fase 8 — dois ajustes no fluxo de confirmação (motivados pelo teste real do FaceTime)
+
+### Ajuste 1: investigação — dá pra pular o clique final do FaceTime?
+
+Investigado ANTES de mudar qualquer código, via pesquisa dedicada
+(não assumido): a página oficial da Apple sobre o esquema de URL
+`facetime://` (Apple Developer — "FaceTime Links", arquivada mas nunca
+retratada) diz textualmente:
+
+> "When opening FaceTime URLs on macOS, the system always prompts the
+> user before initiating a call."
+
+Contrasta explicitamente com iOS, onde uma URL `facetime://` aberta
+POR UM APP (não por um link numa página) dispara a chamada sem
+perguntar — só links tocados numa página web pedem confirmação lá.
+No macOS a regra é sem exceção: SEMPRE pergunta, não importa quem
+abriu a URL. Reforça que é proposital, não incidental: a mesma
+documentação explica que o FaceTime ignora `*`/`#` depois do número
+"pra evitar que usuários redirecionem chamadas maliciosamente" —
+mostra a Apple ativamente pensando em abuso desse esquema de URL. No
+iOS, achado um histórico documentado (fórum de desenvolvedores da
+Apple) de uma confirmação sendo removida e DEVOLVIDA numa versão de
+patch (10.3 → ausente na 11.4 → de volta na 11.4.1) — evidência de que
+a Apple mantém essa proteção ativamente, não é acidente de UI.
+
+**Conclusão prática**: não existe brecha técnica pra pular o clique
+via `facetime://` no macOS — não é uma escolha deste projeto, é
+imposto pelo sistema operacional. Bate exatamente com o que o
+usuário observou no teste real da Fase 8 (perguntado depois, sem
+indução): "abriu e eu precisei clicar em algo pra ligar". **Não há
+decisão nenhuma a tomar aqui** — o "ponto pra considerar" do pedido
+original (o clique como rede de segurança extra legítima, dado que
+FaceTime é a única tool que afeta uma pessoa real em tempo real) seria
+relevante SE fosse possível pular o clique e a decisão fosse manter ou
+remover essa fricção — mas como não é tecnicamente possível remover
+via este mecanismo, o ponto fica registrado como raciocínio válido
+pra uma eventual fase futura que reconsidere COMO a chamada é
+disparada (ex.: automação de UI clicando no botão em nome do
+usuário — isso SIM defenderia a proteção deliberadamente, e não deve
+ser construído sem um pedido explícito, dado o mesmo raciocínio: é a
+única tool com efeito real e imediato numa terceira pessoa).
+
+### Ajuste 2: confirmação por voz — qualquer diálogo médio/alto risco, não só FaceTime
+
+Antes desta fase: mesmo com voz sendo o modo principal de interação
+(Fase 4 parte 2), uma confirmação pendente desabilitava tanto o
+campo de texto quanto o microfone (`micBtn.disabled = busy`,
+`busy` fica `true` durante TODO o `ask()`, incluindo enquanto espera
+confirmação) — só clicar Confirmar/Cancelar no dialog nativo
+resolvia. Corrigido em quatro camadas:
+
+1. **`packages/permissions` não mudou nada** — a confirmação continua
+   sendo decidida pelo Gateway exatamente como antes; isto é só uma
+   segunda VIA de responder a mesma pergunta, na interface.
+2. **`apps/menubar/src/main-process.ts`**: `confirmViaDialog` agora
+   corre uma `Promise.race` entre (a) o clique no dialog nativo, igual
+   antes, e (b) `pendingConfirmationResolve` — um resolver exposto
+   globalmente no módulo, resolvido por um handler IPC novo
+   (`sarah:respondToConfirmation`) quando o renderer reconhece um
+   "sim"/"não" na fala/texto seguinte. A pergunta também é FALADA
+   (`speak`, best-effort — nunca bloqueia a confirmação se o TTS
+   falhar) no idioma da última interação conhecida
+   (`lastOutputLanguage`, atualizado a cada `sarah:ask`).
+3. **Reconhecimento de sim/não por CASAMENTO EXATO, não substring**
+   (`classifyConfirmationAnswer`): decisão deliberada — um match por
+   substring (\"contém 'pode'\") classificaria errado um pedido novo
+   qualquer que contivesse uma dessas palavras por acaso (\"pode
+   marcar uma reunião amanhã\" não é uma resposta de confirmação,
+   mesmo contendo \"pode\"). Testado isoladamente com 15 casos,
+   incluindo esses falsos positivos em potencial — todos corretos.
+4. **`apps/menubar/renderer/renderer.js`**: novo estado
+   `pendingConfirmation`, atualizado pelos eventos
+   `sarah:confirmation-pending`/`-resolved` (via `preload.cjs`).
+   `updateControlsDisabled()` passou a reabrir mic/texto quando uma
+   confirmação está pendente, MESMO com `busy = true` (o `ask()`
+   original continua em andamento, esperando essa mesma resposta).
+   Antes de tratar uma fala/texto novo como um `sarah:ask`,
+   `trySubmitAsConfirmationAnswer()` checa se há confirmação pendente
+   — se houver, o texto NUNCA vira um pedido novo (mesmo se não for
+   reconhecido como sim/não — nesse caso só pede pra repetir), porque
+   o `ask()` original já está ocupado esperando exatamente esta
+   resposta; dois pedidos concorrentes pro mesmo daemon não fariam
+   sentido.
+
+**Trade-off aceito, documentado no código**: se a voz resolver
+primeiro, o dialog nativo pode continuar visualmente aberto por um
+instante — o Electron não expõe um jeito de fechar um `NSAlert` por
+código (não é uma `BrowserWindow`). Clicar nele depois não tem efeito
+(a resposta da voz já venceu a corrida), só fica "solto" até ser
+dispensado manualmente.
+
+### Validação — o que foi possível confirmar de forma automatizada, e o que ficou pro usuário
+
+1. **Lógica de reconhecimento isolada** (`classifyConfirmationAnswer`,
+   sem Electron nenhum): 15 casos, incluindo os falsos positivos em
+   potencial citados acima — todos corretos.
+2. **Mecanismo real, via CDP no processo principal já rodando** (mesma
+   técnica seguinda de novo: `--inspect` no processo principal,
+   `--remote-debugging-port` no processo renderer, SEM screenshot
+   nenhum — só chamadas programáticas + logs de console encaminhados
+   pro stdout do processo principal, já existente desde a Fase 4).
+   Confirmado rodando de verdade: o evento `sarah:confirmation-pending`
+   chega no renderer com `toolName`/`detail`/`risk` corretos, no
+   momento certo (logo que o Gateway pede a confirmação);
+   `window.sarah.respondToConfirmation(...)` é alcançável e devolve
+   `{consumed: false}` sem travar nem lançar quando não vence a
+   corrida.
+3. **Achado real, limitação do MÉTODO de teste, não da funcionalidade**:
+   nesta janela criada/mostrada via CDP (sem foco real de SO — só
+   `win.show()` chamado programaticamente, nunca um clique de verdade
+   no ícone da bandeja), `dialog.showMessageBox()` resolveu quase
+   instantaneamente com "Confirmar", vencendo a corrida ANTES da
+   resposta por voz conseguir chegar — mesma anomalia já registrada
+   investigando a apresentação visual da Fase 7 parte 3 (dialog sem
+   foco real de janela se comporta de um jeito que não reflete o uso
+   real). Evidência de que isto é um artefato do MEU jeito de testar,
+   não um bug da funcionalidade: no teste real de vídeo do FaceTime
+   desta mesma fase (usuário usando o app de verdade, com foco real),
+   o dialog nativo se comportou corretamente — pediu um clique de
+   verdade, sem resolver sozinho. Não dá pra confiar no resultado da
+   corrida medido só por este método.
+4. **Fica pendente de confirmação pelo USUÁRIO, no app rodando de
+   verdade** (mesmo espírito da regra "nunca screenshot" — pra
+   verificar algo que só existe de fato numa interação real com foco
+   real, pede pro usuário fazer e descrever, não tenta simular):
+   disparar uma ação de risco médio/alto de verdade e responder por
+   VOZ dizendo "sim" (sem clicar em nada) e, numa tentativa separada,
+   "não" — confirmando que a ação prossegue/cancela e os controles
+   (mic/texto) ficam liberados durante a espera, sem precisar clicar.
+
+### Ajuste 3: bug real relatado pelo usuário — o dialog nativo travava a janela inteira, inclusive o microfone
+
+O ajuste 2 (acima) implementou a MECÂNICA de responder por voz
+corretamente (evento chega, `respondToConfirmation` reconhece sim/
+não, resolve a Promise certa) — mas o usuário relatou o bug real que
+a validação automatizada não conseguiu pegar sozinha: `dialog.showMessageBox`
+é um `NSAlert`, e um `NSAlert` é **app-modal por natureza** — trava a
+janela INTEIRA enquanto aberto, inclusive o botão de microfone, que
+mora na MESMA janela. Na prática, o usuário não conseguia nem clicar
+no mic pra começar a falar "sim" — o mecanismo de voz nunca tinha
+chance real de ser usado, porque a UI pra ACIONAR a voz (o próprio
+botão) já estava travada pelo dialog que a voz deveria responder.
+
+**Causa raiz**: a especificação original da Fase 4 pedia só "dialog
+nativo do Electron pra confirmação" — decisão razoável NA ÉPOCA (antes
+de existir qualquer interação por voz no projeto), mas que não previa
+que voz se tornaria o modo PRINCIPAL de interação (Fase 4 parte 2,
+bem depois). Um dialog nativo bloqueando é o comportamento ESPERADO
+desse tipo de modal do sistema operacional — não é um bug do Electron,
+é a spec original ficando desatualizada conforme o projeto evoluiu.
+
+**Correção**: `dialog.showMessageBox`/`NSAlert` saiu de vez do fluxo de
+confirmação — trocado por um card DENTRO da própria janela
+(`showStageConfirmation`, `renderer.js`), no lugar da área de legenda
+(`#stage`, mesma área que já mostrava status/resposta), com o mesmo
+padrão visual dos outros cards do app (cor de acento por risco, âmbar
+médio/laranja alto — mantendo a fricção proporcional da Fase 7 parte
+3). Por ser conteúdo NORMAL da página (não um modal do sistema), nunca
+bloqueia clique em nada fora dele — o mic e o campo de texto, numa
+área diferente da janela (`#controls`), continuam respondendo
+normalmente com o card visível. Clique em Confirmar/Cancelar no card
+(IPC novo, `sarah:confirmationClick`) e reconhecimento de voz/texto
+(`sarah:respondToConfirmation`, do ajuste 2) resolvem a MESMA Promise
+agora — sem corrida nenhuma contra dialog nativo, porque não existe
+mais dialog nativo nesse fluxo.
+
+### Validação — inclusive um achado sobre os riscos de testar de forma automatizada num app compartilhado
+
+1. **Lógica pura** (`classifyConfirmationAnswer`): 15 casos, já
+   validados no ajuste 2, sem mudança aqui.
+2. **Achado real, não intencional, durante a tentativa de validação
+   automatizada via CDP**: rodando um script de teste (mesma técnica
+   dos ajustes anteriores — `--inspect`/`--remote-debugging-port`, sem
+   screenshot) contra o app já aberto, o script capturou por acidente
+   uma confirmação REAL que o próprio usuário tinha disparado ao mesmo
+   tempo (testando "liga pro vascaína" por FaceTime, exatamente o
+   teste ao vivo pedido) — o listener de `sarah:confirmation-pending`
+   do script, escrito sem prever uso concorrente, respondeu "sim" no
+   lugar do usuário antes dele conseguir decidir. Consequência
+   verificada direto no audit log (não assumida): a chamada acabou
+   travada num erro de timeout tentando resolver o contato ("vascaína"),
+   `facetime.call` NUNCA chegou a rodar — nenhuma chamada real foi
+   feita a ninguém — mas a interação do usuário foi interrompida sem
+   consentimento dele. Testes automatizados PARARAM imediatamente ao
+   perceber isso, o código de debug temporário foi revertido, e o
+   ocorrido foi revelado ao usuário na mesma hora, incluindo o que o
+   audit log realmente mostrava.
+3. **Sinal real recuperado do próprio incidente**: o estado capturado
+   no momento exato da interceptação (`micBtn.disabled: false`,
+   `promptInput.disabled: false`, card de confirmação visível) é
+   evidência real de que a correção funciona — o mic e o texto
+   continuavam habilitados com uma confirmação de verdade pendente na
+   tela. Não é tratado como validação COMPLETA de propósito (veio de
+   uma interceptação acidental, não de um teste deliberado e limpo) —
+   só como um sinal a favor, registrado com a ressalva de como foi
+   obtido.
+4. **Lição levada pra frente**: não rodar mais scripts de teste
+   automatizados que escutam eventos GLOBAIS de confirmação (como
+   `sarah:confirmation-pending`) contra uma instância do app que
+   também pode estar em uso real ao mesmo tempo — o risco de
+   interceptar uma decisão real do usuário é concreto, não hipotético
+   (aconteceu). Validação final de UMA ponta a outra (mic clicável +
+   "sim"/"não" funcionando) fica com o usuário testando sozinho, no
+   app já reiniciado e limpo, sem nenhum script meu rodando junto.
+
+**Fase 8, ajustes 1-3: investigação e correções completas no código,
+validado até onde dava com segurança. Ajuste 3 aguardando confirmação
+final do usuário, testando sozinho no app real — sem interferência de
+script nenhum desta vez.**
+
+## Fase 8 — WhatsApp: avaliado, prototipado, tecnicamente funcional — ABANDONADO por decisão do usuário
+
+**Importante pra quem ler isto depois**: WhatsApp não entrou no
+projeto, mas NÃO foi por limitação técnica — a integração com a
+WhatsApp Business Platform Cloud API oficial da Meta funcionava (a
+API aceitava as chamadas de verdade, com respostas de sucesso e IDs de
+mensagem reais). Foi abandonado porque a fricção REAL de configuração
+(detalhada abaixo) não valeu a pena pro uso pretendido — uma decisão
+consciente do usuário depois de ver o processo completo na prática,
+não uma tentativa que "não deu certo". Registrado aqui em detalhe
+exatamente pra evitar essa confusão numa leitura futura.
+
+### O que foi implementado (e depois removido, nunca chegou a ser commitado)
+
+Objetivo original: `whatsapp.send_message(destinatario, texto)` — texto
+livre, via Cloud API oficial (nunca biblioteca não-oficial, por risco
+de banimento do número — decisão de projeto já tomada antes de
+começar). Pacote `packages/whatsapp` (mesmo formato leve de
+`packages/notion` — `fetch` cru, sem SDK oficial pesado): `client.ts`
+com `sendTextMessage()`, tradução de erros comuns da Graph API pra
+mensagens claras (código `131047` = janela de 24h fechada, `190` =
+token expirado, `133010` = número não registrado, `131030` =
+destinatário fora da lista permitida — todos encontrados de verdade
+durante a validação, não hipotéticos), normalização de telefone
+(dígitos só, aceita o formato com `+`/espaço/parênteses que
+`apple-contacts.find` devolve). Risco ALTO, sem allowlist — mesmo
+tratamento de `gmail.send_draft` (mensagem saindo de verdade não dá
+pra "desmandar"), com preview de confirmação legível (Para/Mensagem).
+Como a decisão foi abandonar, TODO esse código foi removido do
+repositório (nunca tinha sido commitado — descartar foi só limpar
+working tree, não reverter nada em produção) e toda referência solta
+adicionada em preparação (import/registro em `packages/core`,
+`packages/permissions`, `.env.example`, ícone em `tool-meta.js`, linha
+na mensagem de boas-vindas do `apps/cli`) foi revertida também.
+
+### Setup confirmado na documentação oficial ANTES de implementar (não assumido)
+
+Pesquisado direto na documentação da Meta for Developers antes de
+escrever qualquer código, porque o processo muda com frequência:
+criar um app em developers.facebook.com/apps com o caso de uso
+WhatsApp, conectar/criar uma conta WhatsApp Business, pegar o
+`phone_number_id`, e gerar um token PERMANENTE de **System User**
+(Business Settings → System Users) em vez do token temporário que a
+tela rápida oferece (esse expira em horas). Endpoint de envio
+confirmado: `POST /{phone_number_id}/messages` com
+`{"messaging_product":"whatsapp","to":"...","type":"text","text":{"body":"..."}}`.
+
+### Validação real — o que a API aceitou, e o que nunca foi confirmado entregue
+
+A parte que efetivamente rodou contra a API de verdade, passo a passo:
+
+1. **Primeiro envio**: erro `133010` ("Account not registered") — o
+   número mostrado em "API Setup" tinha sido apenas ADICIONADO à
+   conta, não REGISTRADO pra mandar mensagem (passo separado,
+   `POST /{phone_number_id}/register` com um PIN de verificação em
+   duas etapas escolhido na hora). Registrado com sucesso
+   (`{"success": true}`).
+2. **Segundo envio**: erro `131030` ("Recipient phone number not in
+   allowed list") — achado real: o `phone_number_id` configurado era
+   o número de TESTE auto-provisionado pela Meta (`+1-555-666-7702`,
+   confirmado na própria tela de onboarding "Envie uma mensagem do seu
+   número de teste"), que só aceita mandar mensagem pra destinatários
+   cadastrados manualmente numa lista de permitidos — restrição
+   permanente desse número de teste (não uma configuração pendente que
+   se resolve sozinha), diferente de um número de produção depois de
+   verificação de negócio completa.
+3. Depois de cadastrar um destinatário de teste real, os envios
+   SEGUINTES (texto livre, duas tentativas, e um template
+   `hello_world` pré-aprovado que é garantido de entregar mesmo sem
+   janela de 24h aberta) **todos devolveram sucesso da API** — `200`,
+   com `messageId`/`wamid` reais e, no caso do template,
+   `message_status: "accepted"` explícito. `GET /{phone_number_id}`
+   também confirmou o número saudável do lado da Meta:
+   `quality_rating: "GREEN"`, `status: "CONNECTED"`,
+   `messaging_limit_tier: "TIER_250"`.
+4. **Nenhuma dessas mensagens foi confirmada como recebida** em
+   nenhum dos dois telefones reais usados no teste (conferido pelo
+   usuário diretamente nos aparelhos, não assumido) — nem o texto
+   livre, nem o template garantido. Sem webhook configurado neste
+   projeto (decisão de escopo original: só `send_message`, sem
+   receiver), não existe visibilidade nenhuma sobre POR QUE a entrega
+   final falhou — a Cloud API não expõe nenhum endpoint de consulta de
+   status de entrega por polling, só via evento de webhook. Um último
+   teste (clicar em "Enviar mensagem" na própria tela oficial da Meta,
+   pra isolar se o problema era do código deste projeto ou da
+   conta/número em si) foi proposto mas não chegou a ser concluído —
+   a decisão de abandonar veio antes desse resultado.
+
+### Por que foi abandonado — a fricção real, não um bug
+
+O usuário decidiu encerrar aqui, e o motivo registrado por ele mesmo
+é este: a integração via API oficial funcionava tecnicamente (a API
+aceitava as chamadas, com respostas de sucesso reais) — mas a fricção
+de configuração até chegar nesse ponto (número de "negócio" **sempre
+separado** do WhatsApp pessoal do usuário, MAIS a exigência de
+destinatário pré-cadastrado manualmente enquanto o app estiver em modo
+de desenvolvimento/número de teste, MAIS o passo de registro do
+número, MAIS a entrega final nunca confirmada sem investir em
+infraestrutura de webhook) não valia a pena pro uso pretendido. Não é
+"não deu certo" — é "deu certo o suficiente pra mostrar o tamanho real
+do custo de manter, e o custo não compensou".
+
+**Fase 8 está completa: FaceTime (chamada de vídeo) implementado e
+validado de ponta a ponta; WhatsApp avaliado, prototipado, testado
+contra a API real, e abandonado por decisão consciente do usuário —
+registrado em detalhe aqui pra nunca ser confundido com uma tentativa
+técnica que falhou.**

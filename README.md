@@ -1,4 +1,4 @@
-# SARAH — Fases 0-7 completas (Figma, Fase 5, com pendência de cota)
+# SARAH — Fases 0-8 completas (Figma, Fase 5, com pendência de cota)
 
 Assistente pessoal rodando localmente no Mac, construído com o Claude
 Agent SDK: um Gateway de permissões baseado em risco na frente de
@@ -383,6 +383,52 @@ sandbox), imagem realista/vídeo (Fase 5, decisões conscientes de não
 seguir por enquanto), rastreamento de expiração de credencial e nuance
 de risco médio pras tools além de `run_command` (Fase 7, pendências
 registradas acima) — ver o roadmap completo em `docs/architecture.md`.
+
+## Fase 8 — FaceTime (completa); WhatsApp (avaliado, abandonado por decisão do usuário)
+
+### FaceTime — completa
+
+- **`apple-contacts.find`** (baixo risco): busca por nome no
+  Contacts.app via JXA (mesmo padrão de Calendar/Reminders/Notes),
+  devolve telefone(s)/e-mail(s). Descoberta real: `Contacts.app` tem
+  DOIS gates de permissão separados (`CNContactStore`, nunca
+  solicitado nesta máquina, vs. scripting via Automation/Apple
+  Events, já autorizado por fases anteriores) — o status usa o
+  caminho da Automation, o mesmo que já funciona.
+- **`facetime.call`** (risco MÉDIO, sem allowlist — toda chamada
+  confirma, sempre): dispara chamada de VÍDEO via `facetime://`
+  (nunca `facetime-audio://`). Confirmado por pesquisa dedicada que o
+  macOS SEMPRE exige um clique manual final no app FaceTime pra
+  discar de verdade — não é uma escolha deste projeto, é imposto pelo
+  sistema operacional, sem brecha técnica pra pular.
+- **Validado:** busca real por "Pedro" achou dois contatos e o agente
+  pediu desambiguação sozinho; chamada de vídeo real disparada e
+  confirmada pelo usuário (não por screenshot — ver regra permanente
+  no `CLAUDE.md`).
+
+### WhatsApp — avaliado, prototipado, tecnicamente funcional, ABANDONADO por decisão do usuário
+
+**Não foi uma falha técnica** — vale destacar isso porque é fácil ler
+"WhatsApp não está no projeto" e assumir o contrário. A integração
+com a WhatsApp Business Platform Cloud API oficial da Meta (nunca
+biblioteca não-oficial, por risco de banimento do número) foi
+implementada e testada contra a API real: registro do número,
+tradução de erros reais (`131047` janela de 24h fechada, `190` token
+expirado, `133010` número não registrado, `131030` destinatário fora
+da lista permitida), envios de texto livre e de um template
+pré-aprovado — todos aceitos pela API com respostas de sucesso reais.
+
+O que motivou abandonar: a fricção de configuração até ali (número de
+"negócio" **sempre separado** do WhatsApp pessoal, exigência de
+destinatário pré-cadastrado manualmente enquanto o número estiver em
+modo de teste, passo extra de registro, e a entrega final nunca
+confirmada nos aparelhos reais usados no teste — sem webhook
+configurado neste projeto, não há visibilidade de por quê) não valeu
+a pena pro uso pretendido, na avaliação do próprio usuário depois de
+ver o processo completo. Todo o código (`packages/whatsapp`) foi
+removido do repositório — nunca chegou a ser commitado. Detalhe
+completo, incluindo os erros reais encontrados passo a passo, em
+`docs/architecture.md`.
 
 ## Setup
 
