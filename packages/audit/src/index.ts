@@ -105,6 +105,18 @@ export class AuditLog {
     if (!columns.has("tool_use_id")) this.db.exec(`ALTER TABLE tool_calls ADD COLUMN tool_use_id TEXT`);
     if (!columns.has("status")) this.db.exec(`ALTER TABLE tool_calls ADD COLUMN status TEXT`);
     if (!columns.has("error_message")) this.db.exec(`ALTER TABLE tool_calls ADD COLUMN error_message TEXT`);
+
+    // Otimização (levantamento de performance, item P2): nenhuma destas
+    // três colunas tinha índice — toda leitura (`recordResult` por
+    // `tool_use_id`, `recentErrors`/`repeatedFailures` por `status`,
+    // `repeatedFailures` por `tool_name`) era full scan da tabela
+    // inteira. Puramente aditivo (`CREATE INDEX IF NOT EXISTS`), não
+    // muda nenhum resultado — só como o SQLite acha a linha. Índice
+    // composto em `(tool_name, id)` cobre também o `ORDER BY id DESC`
+    // usado por `repeatedFailures` pra cada tool.
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_use_id ON tool_calls(tool_use_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_calls_status ON tool_calls(status)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_tool_calls_tool_name_id ON tool_calls(tool_name, id)`);
   }
 
   record(entry: AuditEntry): void {
@@ -217,18 +229,42 @@ export class AuditLog {
    * `packages/core`) — pro painel "atividade por categoria". Tools
    * que não seguem esse formato (ex.: `AskUserQuestion`, nativa do
    * Agent SDK) entram com o próprio nome cru, não descartadas.
+   *
+   * Otimização (levantamento de performance, item P3): antes, carregava
+   * TODAS as linhas da tabela (`SELECT tool_name FROM tool_calls`, sem
+   * LIMIT) pra agregar em JS — cresce sem limite junto com o histórico
+   * de uso. Agora o SQLite já agrega por `tool_name` (`GROUP BY`), então
+   * só voltam tantas linhas quanto tool_names DISTINTOS existirem (hoje
+   * ~30, nunca cresce com o volume de chamadas) — o agrupamento por
+   * SERVIDOR (extraído do prefixo `mcp__<server>__`) continua em JS, só
+   * que somando as contagens já agregadas, não fazendo `+1` linha a
+   * linha. Mesmo MULTISET de resultado (testado contra o banco real de
+   * produção) — só o critério de desempate mudou, ver comentário mais
+   * abaixo.
    */
   countByServer(): Array<{ server: string; count: number }> {
-    const rows = this.db.prepare(`SELECT tool_name FROM tool_calls`).all() as Array<{ tool_name: string }>;
+    const rows = this.db.prepare(`SELECT tool_name, COUNT(*) as n FROM tool_calls GROUP BY tool_name`).all() as Array<{
+      tool_name: string;
+      n: number;
+    }>;
     const counts = new Map<string, number>();
     for (const row of rows) {
       const match = row.tool_name.match(/^mcp__([a-z0-9-]+)__/i);
       const server = match ? match[1] : row.tool_name;
-      counts.set(server, (counts.get(server) ?? 0) + 1);
+      counts.set(server, (counts.get(server) ?? 0) + row.n);
     }
+    // ACHADO testando esta mudança contra o banco real: a versão
+    // ANTERIOR (linha a linha, sem `GROUP BY`) já não garantia ordem
+    // nenhuma pra EMPATES (mesma contagem) — dependia da ordem física
+    // de varredura do SQLite, que muda sozinha (sem nenhuma mudança de
+    // código) se um índice novo aparecer ou o banco for compactado. Em
+    // vez de tentar reproduzir esse acidente de implementação,
+    // desempate agora por nome do servidor (ordem alfabética) — sempre
+    // o MESMO resultado, não importa a ordem de varredura do SQLite.
+    // Mais correto que o comportamento anterior, não só equivalente.
     return Array.from(counts.entries())
       .map(([server, count]) => ({ server, count }))
-      .sort((a, b) => b.count - a.count);
+      .sort((a, b) => b.count - a.count || a.server.localeCompare(b.server));
   }
 
   /**

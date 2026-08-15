@@ -169,6 +169,7 @@ export class MemoryStore {
       CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
         INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
       END;
+      CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
     `);
 
     // Migração idempotente — ver bloco grande de comentário acima da
