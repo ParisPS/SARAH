@@ -749,7 +749,7 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
       .filter(Boolean)
       .join("\n\n");
 
-    const stream = query({
+    const runQuery = (resumeId: string | undefined) => query({
       prompt,
       options: {
         mcpServers: {
@@ -774,11 +774,36 @@ export function createSarahSession(options: CreateSarahSessionOptions): SarahSes
           PostToolUse: [{ hooks: [onPostToolUse] }],
           PostToolUseFailure: [{ hooks: [onPostToolUse] }],
         },
-        ...(sessionId ? { resume: sessionId } : {}),
+        ...(resumeId ? { resume: resumeId } : {}),
         systemPrompt: systemPromptText,
       },
     });
 
+    // Achado real (2026-10-01): o daemon do menu bar ficou 47 dias no
+    // ar segurando o mesmo `sessionId` em memória, e a limpeza
+    // automática do Claude Code (transcrições com mais de 30 dias,
+    // `cleanupPeriodDays`) apagou o arquivo dessa sessão do disco — o
+    // `resume` seguinte falhou com "No conversation found with session
+    // ID". Sessão perdida não é motivo pra derrubar a pergunta: descarta
+    // o `sessionId` e refaz UMA vez numa sessão nova (o contexto da
+    // conversa anterior se perde, mas a memória persistente do
+    // @sarah/memory continua valendo). Só tenta de novo se nada foi
+    // emitido ainda, pra nunca duplicar resposta parcial.
+    let yieldedAnything = false;
+    try {
+      for await (const event of streamEvents(runQuery(sessionId))) {
+        yieldedAnything = true;
+        yield event;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!sessionId || yieldedAnything || !message.includes("No conversation found")) throw error;
+      sessionId = undefined;
+      yield* streamEvents(runQuery(undefined));
+    }
+  }
+
+  async function* streamEvents(stream: ReturnType<typeof query>): AsyncGenerator<SarahEvent, void, unknown> {
     for await (const message of stream) {
       if (message.type === "system" && message.subtype === "init") {
         sessionId = message.session_id;
